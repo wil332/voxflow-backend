@@ -34,18 +34,14 @@ except Exception as e:
 # DATABASE INITIALIZATION
 # ============================================================
 try:
-    # Cek koneksi database
     from sqlalchemy import text
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
         logger.info("Database connection successful")
-
-    # Buat tabel
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created/verified")
 except Exception as e:
     logger.error(f"Database initialization error: {e}")
-    # Jangan crash, tapi log error
 
 # ============================================================
 # FASTAPI APP
@@ -87,15 +83,14 @@ def read_root():
         "status": "success",
         "message": "PodFlow AI Backend is running and ready!",
         "cors": "enabled",
-        "database": "connected"  # Ini akan membantu debug
+        "database": "connected"
     }
 
 # ============================================================
-# DEBUG ENDPOINT - Cek Database & Config
+# DEBUG ENDPOINT
 # ============================================================
 @app.get("/api/v1/debug")
 def debug_info():
-    """Endpoint untuk debugging - cek status database dan config"""
     try:
         from sqlalchemy import text
         with engine.connect() as conn:
@@ -117,7 +112,7 @@ def debug_info():
     }
 
 # ============================================================
-# HISTORY ENDPOINT (DENGAN ERROR HANDLING)
+# HISTORY ENDPOINT
 # ============================================================
 @app.get("/api/v1/podcast/history")
 def get_podcast_history(db: Session = Depends(get_db)):
@@ -132,7 +127,7 @@ def get_podcast_history(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"History error: {e}")
         return JSONResponse(
-            status_code=200,  # Tetap return 200 dengan data kosong agar frontend tidak crash
+            status_code=200,
             content={
                 "status": "error",
                 "total": 0,
@@ -188,50 +183,54 @@ def trigger_podcast_generation(
 
         logger.info(f"Created job {db_item.id} for keyword: {keyword}")
 
-        # Import di sini
         from app.agents.ai_pipeline import run_ai_pipeline
 
         def run_pipeline():
-    try:
-        from app.database.database import SessionLocal
-        bg_db = SessionLocal()
-        try:
-            item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-            if item:
-                item.status = "processing"
-                item.progress = 5
-                item.agent_status = {"research": "pending", "script": "pending", "audio": "pending", "metadata": "pending"}
-                bg_db.commit()
+            try:
+                from app.database.database import SessionLocal
+                bg_db = SessionLocal()
+                try:
+                    item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
+                    if item:
+                        item.status = "processing"
+                        item.progress = 5
+                        item.agent_status = {
+                            "research": "pending",
+                            "script": "pending",
+                            "audio": "pending",
+                            "metadata": "pending"
+                        }
+                        bg_db.commit()
 
-                # === KIRIM JOB_ID KE PIPELINE ===
-                research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword, db_item.id)
+                        # Jalankan pipeline dengan job_id
+                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword, db_item.id)
 
-                # Update hasil
-                item.research_summary = str(research_data)
-                item.metadata_json = metadata
-                item.audio_segments = audio_segments
-                item.status = "completed"
-                item.progress = 100
-                item.agent_status = {
-                    "research": "done",
-                    "script": "done",
-                    "audio": "done",
-                    "metadata": "done"
-                }
-                bg_db.commit()
-                logger.info(f"Pipeline completed for job {db_item.id}")
-        except Exception as e:
-            logger.error(f"Pipeline error: {e}", exc_info=True)
-            if bg_db:
-                item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-                if item:
-                    item.status = "failed"
-                    item.error_message = str(e)
-                    bg_db.commit()
-        finally:
-            bg_db.close()
-    except Exception as e:
-        logger.error(f"Background task error: {e}", exc_info=True)
+                        # Update hasil
+                        item.research_summary = str(research_data)
+                        item.metadata_json = metadata
+                        item.audio_segments = audio_segments
+                        item.status = "completed"
+                        item.progress = 100
+                        item.agent_status = {
+                            "research": "done",
+                            "script": "done",
+                            "audio": "done",
+                            "metadata": "done"
+                        }
+                        bg_db.commit()
+                        logger.info(f"Pipeline completed for job {db_item.id}")
+                except Exception as e:
+                    logger.error(f"Pipeline error: {e}", exc_info=True)
+                    if bg_db:
+                        item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
+                        if item:
+                            item.status = "failed"
+                            item.error_message = str(e)
+                            bg_db.commit()
+                finally:
+                    bg_db.close()
+            except Exception as e:
+                logger.error(f"Background task error: {e}", exc_info=True)
 
         background_tasks.add_task(run_pipeline)
 
@@ -241,7 +240,7 @@ def trigger_podcast_generation(
             "message": "Pipeline started"
         }
     except Exception as e:
-        logger.error(f"Generate error: {e}")
+        logger.error(f"Generate error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
@@ -367,7 +366,6 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
         if db_item.status != "completed":
             raise HTTPException(400, "Podcast belum selesai diproses.")
 
-        # Cek apakah merged_audio sudah ada
         if not db_item.merged_audio_filename:
             clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
             clean_keyword = clean_keyword.replace(' ', '_')[:50]
@@ -377,7 +375,6 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(db_item)
 
-        # Render video
         metadata = db_item.metadata_json or {}
         video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
 
