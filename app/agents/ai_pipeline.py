@@ -7,21 +7,26 @@ from app.database.models import PodcastHistory
 
 def update_agent_status(job_id: int, agent: str, status: str, progress: int):
     """Update status agent di database"""
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
         if item:
             item.progress = progress
-            if item.agent_status:
-                # Update status agent tertentu
-                item.agent_status[agent] = status
+            if item.agent_status is not None:
+                # Reassignment penuh (bukan mutasi in-place) supaya SQLAlchemy
+                # PASTI mendeteksi perubahan, walau MutableDict tidak terpasang.
+                updated = dict(item.agent_status)
+                updated[agent] = status
+                item.agent_status = updated
                 db.commit()
-                print(f"[STATUS] Job {job_id}: {agent} → {status} ({progress}%)")
+                print(f"[STATUS] Job {job_id}: {agent} -> {status} ({progress}%)")
             else:
                 print(f"[STATUS] WARNING: agent_status is None for job {job_id}")
-        db.close()
     except Exception as e:
         print(f"[UPDATE STATUS ERROR] {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 def run_ai_pipeline(keyword: str, job_id: int = None):
     print(f"[PIPELINE] Memulai pipeline untuk keyword: {keyword}")

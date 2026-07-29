@@ -42,31 +42,32 @@ def run_scriptwriter_agent(research_text: str) -> list:
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=90)
-
-        if response.status_code != 200:
-            print(f"[SCRIPT AGENT ERROR] Status API: {response.status_code} - {response.text}")
-            raise ValueError(f"Agnes API Error status {response.status_code}")
-
         data = response.json()
         raw_content = data['choices'][0]['message']['content']
 
-        print(f"\n[SCRIPT AGENT LOG] Respons mentah dari Agnes AI:\n{raw_content[:200]}...\n")
-
+        # === PERBAIKAN: Handle berbagai format Agnes ===
         # Bersihkan markdown
         cleaned_content = re.sub(r'```(?:json)?', '', raw_content).strip()
-        match = re.search(r'\[.*\]', cleaned_content, re.DOTALL)
-        if match:
-            json_string = match.group(0)
-        else:
-            json_string = cleaned_content
 
-        script_data = json.loads(json_string)
+        # Coba parse JSON
+        script_data = json.loads(cleaned_content)
+
+        # Jika Agnes mengembalikan object dengan key "podcast_naskah"
+        if isinstance(script_data, dict) and "podcast_naskah" in script_data:
+            script_data = script_data["podcast_naskah"]
+
+        # Jika masih dict, coba ambil array pertama
+        if isinstance(script_data, dict):
+            # Cari key yang berisi array
+            for key, value in script_data.items():
+                if isinstance(value, list):
+                    script_data = value
+                    break
 
         if isinstance(script_data, list) and len(script_data) > 0:
-            print(f"[SCRIPT AGENT SUCCESS] Berhasil membuat {len(script_data)} segmen naskah.")
             return script_data
         else:
-            raise ValueError("Hasil parsing JSON bukan berupa list array valid.")
+            raise ValueError("Data bukan array yang valid")
 
     except Exception as e:
         print(f"[SCRIPT AGENT FALLBACK TRIGGERED] Terjadi kesalahan: {e}")
