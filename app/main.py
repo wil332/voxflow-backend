@@ -3,6 +3,7 @@ import re
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.ai_pipeline import run_ai_pipeline
 from app.middlewares.error_handler import setup_exception_handlers
@@ -10,6 +11,9 @@ from app.database.database import engine, Base, get_db
 from app.database.models import PodcastHistory
 from app.utils.audio_merger import merge_podcast_segments
 from app.agents.metadata_agent import run_metadata_agent
+from app.utils.video_generator import create_tiktok_video_with_subtitles
+from app.agents.tiktok_agent import publish_to_tiktok_webhook
+from pydantic import BaseModel
 
 # Membuat tabel otomatis saat aplikasi berjalan
 Base.metadata.create_all(bind=engine)
@@ -18,6 +22,14 @@ app = FastAPI(
     title="PodFlow AI Backend",
     description="API server untuk otomatisasi platform podcast otonom.",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Mengizinkan semua domain/localhost frontend
+    allow_credentials=True,
+    allow_methods=["*"],  # Mengizinkan semua method (GET, POST, dll)
+    allow_headers=["*"],
 )
 
 setup_exception_handlers(app)
@@ -74,6 +86,8 @@ def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
 
     # 4. Jalankan Penggabungan Audio
     final_audio_filename = merge_podcast_segments(segments_list, output_filename=output_name)
+    video_filename = create_tiktok_video_with_subtitles(final_audio_filename, metadata)
+    # tiktok_status = publish_to_tiktok_webhook(video_filename, metadata)
     
     # 5. Simpan ke Database
     db_item = PodcastHistory(
@@ -93,6 +107,10 @@ def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
         "research_summary": research_data,
         "generated_script": script_json,
         "full_audio_file": final_audio_filename,
+        "video_output" : {
+            "file": video_filename,
+            "download_url": f"/api/v1/podcast/video/{video_filename}"
+        },
         "metadata": metadata,
         "message": "Pipeline podcast berhasil diselesaikan dan digabung!"
     }
@@ -122,3 +140,48 @@ def download_audio_file(filename: str):
         media_type="audio/mpeg",
         filename=filename
     )
+    
+class TikTokUploadRequest(BaseModel):
+    video_filename: str
+    title: str
+    description: str
+    tags: list[str] = []
+    cta: str = "Jangan lupa follow!"
+
+@app.post("/api/v1/podcast/upload-tiktok")
+def upload_to_tiktok_manual(payload: TikTokUploadRequest):
+    """
+    Endpoint yang dipanggil oleh Frontend saat tombol 'Upload ke TikTok' diklik.
+    """
+    metadata = {
+        "title": payload.title,
+        "description": payload.description,
+        "tags": payload.tags,
+        "cta": payload.cta
+    }
+    
+    # Panggil fungsi agent TikTok
+    result = publish_to_tiktok_webhook(payload.video_filename, metadata)
+    
+    if result.get("status") in ["success", "test_success"]:
+        return {
+            "status": "success",
+            "message": "Video berhasil dipublikasikan ke TikTok MAXY!",
+            "data": result
+        }
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Gagal upload ke TikTok: {result.get('error')}"
+        )
+@app.get("/api/v1/podcast/video/{video_filename}")
+def get_video_stream(video_filename: str):
+    """
+    Endpoint untuk menyajikan (stream/download) file MP4 ke Frontend.
+    """
+    video_path = os.path.join("output_video", video_filename)
+    
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="File video tidak ditemukan")
+        
+    return FileResponse(video_path, media_type="video/mp4")
