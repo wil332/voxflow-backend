@@ -3,11 +3,28 @@ from app.config import settings
 from app.database.database import SessionLocal
 from app.database.models import PodcastHistory
 
+def update_research_status(job_id: int, status: str, progress: int):
+    """Update status research agent di database"""
+    try:
+        db = SessionLocal()
+        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+        if item:
+            item.progress = progress
+            if item.agent_status:
+                item.agent_status["research"] = status
+                db.commit()
+                print(f"[RESEARCH] Job {job_id}: {status} at {progress}%")
+        db.close()
+    except Exception as e:
+        print(f"[RESEARCH STATUS ERROR] {e}")
+
 def run_research_agent(keyword: str, job_id: int = None) -> str:
     """
     Agent 1: Research Agent menggunakan Qwen API.
     job_id: untuk update progress ke database
     """
+    print(f"[RESEARCH] Starting research for keyword: {keyword}")
+
     # === UPDATE PROGRESS: Research Started ===
     if job_id:
         update_research_status(job_id, "running", 20)
@@ -45,7 +62,7 @@ def run_research_agent(keyword: str, job_id: int = None) -> str:
         if job_id:
             update_research_status(job_id, "running", 40)
 
-        print(f"[RESEARCH] Calling Qwen API for keyword: {keyword}")
+        print(f"[RESEARCH] Calling Qwen API...")
         response = requests.post(url, headers=headers, json=payload, timeout=70)
 
         # === UPDATE PROGRESS: API Response Received ===
@@ -53,7 +70,7 @@ def run_research_agent(keyword: str, job_id: int = None) -> str:
             update_research_status(job_id, "running", 60)
 
         if response.status_code != 200:
-            print(f"[RESEARCH AGENT ERROR] Status: {response.status_code}, Body: {response.text}")
+            print(f"[RESEARCH] Error: Status {response.status_code}")
             if job_id:
                 update_research_status(job_id, "failed", 0)
             return f"Gagal dari server Qwen (Status {response.status_code}): {response.text}"
@@ -61,7 +78,7 @@ def run_research_agent(keyword: str, job_id: int = None) -> str:
         data = response.json()
         result = data['choices'][0]['message']['content']
 
-        print(f"[RESEARCH] Qwen API response received, length: {len(result)}")
+        print(f"[RESEARCH] Success, response length: {len(result)}")
 
         # === UPDATE PROGRESS: Research Complete ===
         if job_id:
@@ -70,27 +87,12 @@ def run_research_agent(keyword: str, job_id: int = None) -> str:
         return result
 
     except requests.exceptions.RequestException as e:
-        print(f"[RESEARCH AGENT EXCEPTION] Error koneksi: {e}")
+        print(f"[RESEARCH] Connection error: {e}")
         if job_id:
             update_research_status(job_id, "failed", 0)
         return f"Error koneksi ke Qwen API: {str(e)}"
-    except (ValueError, KeyError) as e:
-        print(f"[RESEARCH AGENT EXCEPTION] Error parsing: {e}")
+    except Exception as e:
+        print(f"[RESEARCH] Error: {e}")
         if job_id:
             update_research_status(job_id, "failed", 0)
-        return f"Format respons Qwen tidak valid. Respons mentah: {response.text}"
-
-def update_research_status(job_id: int, status: str, progress: int):
-    """Update status research agent di database"""
-    try:
-        db = SessionLocal()
-        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
-        if item:
-            item.progress = progress
-            if item.agent_status:
-                item.agent_status["research"] = status
-            db.commit()
-            print(f"[RESEARCH STATUS] Job {job_id}: {status} at {progress}%")
-        db.close()
-    except Exception as e:
-        print(f"[UPDATE STATUS ERROR] {e}")
+        return f"Error: {str(e)}"
