@@ -35,4 +35,17 @@ class Settings:
     def ASSETS_DIR(self) -> str:
         return os.path.join(self.STORAGE_DIR, "assets")
 
+# Di app/config.py tambahkan
+class Settings:
+    # ... existing code ...
+
+    def get_debug_info(self):
+        return {
+            "database_url": "set" if os.getenv("DATABASE_URL") else "MISSING",
+            "qwen_key": "set" if self.QWEN_API_KEY else "MISSING",
+            "agnes_key": "set" if self.AGNES_API_KEY else "MISSING",
+            "elevenlabs_key": "set" if self.ELEVENLABS_API_KEY else "MISSING",
+            "groq_key": "set" if self.GROQ_API_KEY else "MISSING",
+        }
+
 settings = Settings()

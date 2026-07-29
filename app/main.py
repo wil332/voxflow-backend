@@ -1,322 +1,399 @@
 import os
 import re
-import threading
+import logging
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import static_ffmpeg
-from fastapi.responses import Response
-from fastapi.middleware.cors import CORSMiddleware
-
 from app.config import settings
-from app.agents.ai_pipeline import run_ai_pipeline
-from app.middlewares.error_handler import setup_exception_handlers
 from app.database.database import engine, Base, get_db
 from app.database.models import PodcastHistory
-from app.agents.tiktok_agent import publish_to_tiktok_webhook
-from app.utils.audio_merger import merge_podcast_segments
-from app.utils.video_generator import create_tiktok_video_with_subtitles
+from app.middlewares.error_handler import setup_exception_handlers
 
-static_ffmpeg.add_paths()
-Base.metadata.create_all(bind=engine)
+# ============================================================
+# SETUP LOGGING
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
+# ============================================================
+# SETUP FFMPEG
+# ============================================================
+try:
+    static_ffmpeg.add_paths()
+    logger.info("FFmpeg paths added successfully")
+except Exception as e:
+    logger.error(f"FFmpeg setup error: {e}")
+
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
+try:
+    # Cek koneksi database
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+        logger.info("Database connection successful")
+
+    # Buat tabel
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created/verified")
+except Exception as e:
+    logger.error(f"Database initialization error: {e}")
+    # Jangan crash, tapi log error
+
+# ============================================================
+# FASTAPI APP
+# ============================================================
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API server untuk otomatisasi platform podcast otonom.",
     version=settings.VERSION
 )
 
+# ============================================================
+# CORS MIDDLEWARE
+# ============================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "http://localhost:5174",
         "http://127.0.0.1:5173",
-        "https://voxflow-frontend.vercel.app",  # jika deploy di Vercel
-        "https://voxflow-frontend-production.up.railway.app",  # jika deploy di Railway
-        "https://*.railway.app",  # wildcard untuk semua subdomain Railway
-        "https://*.vercel.app",   # wildcard untuk semua subdomain Vercel
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "https://*.railway.app",
+        "https://*.vercel.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 setup_exception_handlers(app)
 
-# --------------------------------------------------------------------
-# 1. HEALTH CHECK
-# --------------------------------------------------------------------
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 @app.get("/")
 def read_root():
-    return {"status": "success", "message": "PodFlow AI Backend is running!"}
+    return {
+        "status": "success",
+        "message": "PodFlow AI Backend is running and ready!",
+        "cors": "enabled",
+        "database": "connected"  # Ini akan membantu debug
+    }
 
-# --------------------------------------------------------------------
-# 2. PIPELINE GENERATE (ASYNCHRONOUS)
-# --------------------------------------------------------------------
-def run_pipeline_background(db_id: int, keyword: str):
-    """Background task: jalankan pipeline dan update database."""
-    from app.database.database import SessionLocal
-    db = SessionLocal()
-
+# ============================================================
+# DEBUG ENDPOINT - Cek Database & Config
+# ============================================================
+@app.get("/api/v1/debug")
+def debug_info():
+    """Endpoint untuk debugging - cek status database dan config"""
     try:
-        # Update status awal
-        item = db.query(PodcastHistory).filter(PodcastHistory.id == db_id).first()
-        if not item:
-            return
-        item.status = "processing"
-        item.progress = 0
-        item.agent_status = {"research": "running", "script": "pending", "audio": "pending", "metadata": "pending"}
-        db.commit()
-
-        # Jalankan pipeline (synchronous di background)
-        research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword)
-
-        # Update database dengan hasil
-        item.research_summary = str(research_data)
-        item.metadata_json = metadata
-        item.audio_segments = audio_segments
-        item.status = "completed"
-        item.progress = 100
-        item.agent_status = {
-            "research": "done",
-            "script": "done",
-            "audio": "done",
-            "metadata": "done"
-        }
-        db.commit()
-
-        print(f"[BACKGROUND] Pipeline selesai untuk job {db_id}")
-
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            db_status = "connected"
     except Exception as e:
-        print(f"[BACKGROUND ERROR] Job {db_id} gagal: {e}")
-        item = db.query(PodcastHistory).filter(PodcastHistory.id == db_id).first()
-        if item:
-            item.status = "failed"
-            item.error_message = str(e)
-            db.commit()
-    finally:
-        db.close()
+        db_status = f"error: {str(e)}"
 
+    return {
+        "status": "ok",
+        "database": db_status,
+        "storage_dir": settings.STORAGE_DIR,
+        "api_keys": {
+            "qwen": "set" if settings.QWEN_API_KEY else "MISSING",
+            "agnes": "set" if settings.AGNES_API_KEY else "MISSING",
+            "elevenlabs": "set" if settings.ELEVENLABS_API_KEY else "MISSING",
+            "groq": "set" if settings.GROQ_API_KEY else "MISSING",
+        }
+    }
 
+# ============================================================
+# HISTORY ENDPOINT (DENGAN ERROR HANDLING)
+# ============================================================
+@app.get("/api/v1/podcast/history")
+def get_podcast_history(db: Session = Depends(get_db)):
+    try:
+        logger.info("Fetching podcast history")
+        history = db.query(PodcastHistory).all()
+        return {
+            "status": "success",
+            "total": len(history),
+            "data": history
+        }
+    except Exception as e:
+        logger.error(f"History error: {e}")
+        return JSONResponse(
+            status_code=200,  # Tetap return 200 dengan data kosong agar frontend tidak crash
+            content={
+                "status": "error",
+                "total": 0,
+                "data": [],
+                "message": str(e)
+            }
+        )
+
+# ============================================================
+# GENERATE ENDPOINT
+# ============================================================
 @app.post("/api/v1/podcast/generate")
 def trigger_podcast_generation(
     keyword: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    # Buat entri database dengan status processing
-    db_item = PodcastHistory(
-        keyword=keyword,
-        status="processing",
-        progress=0,
-        agent_status={"research": "pending", "script": "pending", "audio": "pending", "metadata": "pending"}
-    )
-    db.add(db_item)
-    db.commit()
-    db.refresh(db_item)
+    try:
+        logger.info(f"Generate request for keyword: {keyword}")
 
-    # Jalankan pipeline di background
-    background_tasks.add_task(run_pipeline_background, db_item.id, keyword)
+        # Cek API keys
+        if not settings.QWEN_API_KEY:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": "QWEN_API_KEY not configured"}
+            )
+        if not settings.AGNES_API_KEY:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": "AGNES_API_KEY not configured"}
+            )
+        if not settings.ELEVENLABS_API_KEY:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": "ELEVENLABS_API_KEY not configured"}
+            )
 
-    return {
-        "job_id": db_item.id,
-        "status": "processing",
-        "message": "Pipeline started. Poll /api/v1/podcast/status/{job_id} for progress."
-    }
+        # Buat entri database
+        db_item = PodcastHistory(
+            keyword=keyword,
+            status="processing",
+            progress=0,
+            agent_status={
+                "research": "pending",
+                "script": "pending",
+                "audio": "pending",
+                "metadata": "pending"
+            }
+        )
+        db.add(db_item)
+        db.commit()
+        db.refresh(db_item)
 
-# --------------------------------------------------------------------
-# 3. ENDPOINT STATUS (POLLING)
-# --------------------------------------------------------------------
+        logger.info(f"Created job {db_item.id} for keyword: {keyword}")
+
+        # Import di sini
+        from app.agents.ai_pipeline import run_ai_pipeline
+
+        def run_pipeline():
+            try:
+                from app.database.database import SessionLocal
+                bg_db = SessionLocal()
+                try:
+                    item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
+                    if item:
+                        item.status = "processing"
+                        item.progress = 10
+                        item.agent_status = {"research": "running", "script": "pending", "audio": "pending", "metadata": "pending"}
+                        bg_db.commit()
+
+                        # Jalankan pipeline
+                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword)
+
+                        # Update hasil
+                        item.research_summary = str(research_data)
+                        item.metadata_json = metadata
+                        item.audio_segments = audio_segments
+                        item.status = "completed"
+                        item.progress = 100
+                        item.agent_status = {
+                            "research": "done",
+                            "script": "done",
+                            "audio": "done",
+                            "metadata": "done"
+                        }
+                        bg_db.commit()
+                        logger.info(f"Pipeline completed for job {db_item.id}")
+                except Exception as e:
+                    logger.error(f"Pipeline error: {e}")
+                    if bg_db:
+                        item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
+                        if item:
+                            item.status = "failed"
+                            item.error_message = str(e)
+                            bg_db.commit()
+                finally:
+                    bg_db.close()
+            except Exception as e:
+                logger.error(f"Background task error: {e}")
+
+        background_tasks.add_task(run_pipeline)
+
+        return {
+            "job_id": db_item.id,
+            "status": "processing",
+            "message": "Pipeline started"
+        }
+    except Exception as e:
+        logger.error(f"Generate error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e),
+                "detail": "Internal server error"
+            }
+        )
+
+# ============================================================
+# STATUS ENDPOINT
+# ============================================================
 @app.get("/api/v1/podcast/status/{job_id}")
 def get_job_status(job_id: int, db: Session = Depends(get_db)):
-    item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+        if not item:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "not_found", "message": "Job tidak ditemukan"}
+            )
 
-    response = {
-        "id": item.id,
-        "keyword": item.keyword,
-        "status": item.status,
-        "progress": item.progress,
-        "agent_status": item.agent_status,
-        "error_message": item.error_message,
-    }
+        response = {
+            "id": item.id,
+            "keyword": item.keyword,
+            "status": item.status,
+            "progress": item.progress,
+            "agent_status": item.agent_status,
+            "error_message": item.error_message,
+        }
 
-    if item.status == "completed":
-        response["metadata"] = item.metadata_json
-        if item.merged_audio_filename:
-            response["audio_url"] = f"/api/v1/podcast/download/{item.merged_audio_filename}"
-        if item.video_filename:
-            response["video_url"] = f"/api/v1/podcast/video/{item.video_filename}"
+        if item.status == "completed":
+            if item.merged_audio_filename:
+                response["audio_url"] = f"/api/v1/podcast/download/{item.merged_audio_filename}"
+            if item.video_filename:
+                response["video_url"] = f"/api/v1/podcast/video/{item.video_filename}"
+            if item.metadata_json:
+                response["metadata"] = item.metadata_json
 
-    return response
+        return response
+    except Exception as e:
+        logger.error(f"Status error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
 
-# --------------------------------------------------------------------
-# 4. MERGE AUDIO (JIKA INGIN MANUAL)
-# --------------------------------------------------------------------
+# ============================================================
+# DOWNLOAD & STREAM
+# ============================================================
+@app.get("/api/v1/podcast/download/{filename}")
+def download_audio_file(filename: str):
+    try:
+        file_path = os.path.join(settings.OUTPUT_AUDIO_DIR, filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(404, f"File '{filename}' tidak ditemukan.")
+        return FileResponse(path=file_path, media_type="audio/mpeg", filename=filename)
+    except Exception as e:
+        logger.error(f"Download error: {e}")
+        raise HTTPException(500, f"Error: {str(e)}")
+
+@app.get("/api/v1/podcast/video/{video_filename}")
+def get_video_stream(video_filename: str):
+    try:
+        video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
+        if not os.path.exists(video_path):
+            raise HTTPException(404, "File video tidak ditemukan")
+        return FileResponse(video_path, media_type="video/mp4")
+    except Exception as e:
+        logger.error(f"Video stream error: {e}")
+        raise HTTPException(500, f"Error: {str(e)}")
+
+# ============================================================
+# MERGE AUDIO
+# ============================================================
 @app.post("/api/v1/podcast/merge-audio/{database_id}")
 def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
-    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
-    if not db_item:
-        raise HTTPException(404, "Podcast tidak ditemukan.")
-    if not db_item.audio_segments:
-        raise HTTPException(400, "Belum ada segmen audio.")
-    if db_item.status != "completed":
-        raise HTTPException(400, "Podcast belum selesai diproses.")
+    try:
+        from app.utils.audio_merger import merge_podcast_segments
 
-    clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
-    clean_keyword = clean_keyword.replace(' ', '_')[:50]
-    merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
+        db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+        if not db_item:
+            raise HTTPException(404, "Podcast tidak ditemukan.")
+        if not db_item.audio_segments:
+            raise HTTPException(400, "Belum ada segmen audio.")
+        if db_item.status != "completed":
+            raise HTTPException(400, "Podcast belum selesai diproses.")
 
-    merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
-    merged_audio_path = os.path.join(settings.OUTPUT_AUDIO_DIR, merged_audio_filename)
-
-    if not os.path.exists(merged_audio_path):
-        raise HTTPException(500, "Gagal menggabungkan audio.")
-
-    db_item.merged_audio_filename = merged_audio_filename
-    db.commit()
-    db.refresh(db_item)
-
-    return {
-        "status": "completed",
-        "database_id": db_item.id,
-        "merged_audio_filename": merged_audio_filename,
-        "download_url": f"/api/v1/podcast/download/{merged_audio_filename}"
-    }
-
-# --------------------------------------------------------------------
-# 5. GENERATE VIDEO (RENDER MP4)
-# --------------------------------------------------------------------
-@app.post("/api/v1/podcast/generate-video/{database_id}")
-def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
-    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
-    if not db_item:
-        raise HTTPException(404, "Podcast tidak ditemukan.")
-    if not db_item.audio_segments:
-        raise HTTPException(400, "Belum ada segmen audio.")
-    if db_item.status != "completed":
-        raise HTTPException(400, "Podcast belum selesai diproses.")
-
-    # Cek apakah merged_audio sudah ada, kalau belum, buat dulu
-    if not db_item.merged_audio_filename:
         clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
         clean_keyword = clean_keyword.replace(' ', '_')[:50]
         merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
+
         merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
+
         db_item.merged_audio_filename = merged_audio_filename
         db.commit()
         db.refresh(db_item)
 
-    # Render video
-    metadata = db_item.metadata_json or {}
-    video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
+        return {
+            "status": "completed",
+            "database_id": db_item.id,
+            "merged_audio_filename": merged_audio_filename,
+            "download_url": f"/api/v1/podcast/download/{merged_audio_filename}"
+        }
+    except Exception as e:
+        logger.error(f"Merge audio error: {e}")
+        raise HTTPException(500, f"Error: {str(e)}")
 
-    if not video_filename:
-        raise HTTPException(500, "Gagal merender video.")
+# ============================================================
+# GENERATE VIDEO
+# ============================================================
+@app.post("/api/v1/podcast/generate-video/{database_id}")
+def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
+    try:
+        from app.utils.video_generator import create_tiktok_video_with_subtitles
+        from app.utils.audio_merger import merge_podcast_segments
 
-    db_item.video_filename = video_filename
-    db.commit()
-    db.refresh(db_item)
+        db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+        if not db_item:
+            raise HTTPException(404, "Podcast tidak ditemukan.")
+        if not db_item.audio_segments:
+            raise HTTPException(400, "Belum ada segmen audio.")
+        if db_item.status != "completed":
+            raise HTTPException(400, "Podcast belum selesai diproses.")
 
-    return {
-        "status": "completed",
-        "database_id": db_item.id,
-        "video_filename": video_filename,
-        "video_stream_url": f"/api/v1/podcast/video/{video_filename}"
-    }
+        # Cek apakah merged_audio sudah ada
+        if not db_item.merged_audio_filename:
+            clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
+            clean_keyword = clean_keyword.replace(' ', '_')[:50]
+            merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
+            merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
+            db_item.merged_audio_filename = merged_audio_filename
+            db.commit()
+            db.refresh(db_item)
 
-# --------------------------------------------------------------------
-# 6. DOWNLOAD & STREAM (TIDAK BERUBAH, TETAP ADA)
-# --------------------------------------------------------------------
-@app.get("/api/v1/podcast/download/{filename}")
-def download_audio_file(filename: str):
-    file_path = os.path.join(settings.OUTPUT_AUDIO_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(404, f"File '{filename}' tidak ditemukan.")
-    return FileResponse(path=file_path, media_type="audio/mpeg", filename=filename)
+        # Render video
+        metadata = db_item.metadata_json or {}
+        video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
 
-@app.get("/api/v1/podcast/video/{video_filename}")
-def get_video_stream(video_filename: str):
-    video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
-    if not os.path.exists(video_path):
-        raise HTTPException(404, "File video tidak ditemukan")
-    return FileResponse(video_path, media_type="video/mp4")
+        if not video_filename:
+            raise HTTPException(500, "Gagal merender video.")
 
-# --------------------------------------------------------------------
-# 7. TIKTOK UPLOAD (MANUAL)
-# --------------------------------------------------------------------
-class TikTokUploadRequest(BaseModel):
-    video_filename: str
-    title: str
-    description: str
-    tags: list[str] = []
-    cta: str = "Jangan lupa follow!"
+        db_item.video_filename = video_filename
+        db.commit()
+        db.refresh(db_item)
 
-@app.post("/api/v1/podcast/upload-tiktok")
-def upload_to_tiktok_manual(payload: TikTokUploadRequest):
-    metadata = {
-        "title": payload.title,
-        "description": payload.description,
-        "tags": payload.tags,
-        "cta": payload.cta
-    }
-    result = publish_to_tiktok_webhook(payload.video_filename, metadata)
-    if result.get("status") in ["success", "test_success"]:
-        return {"status": "success", "message": "Video berhasil dipublikasikan ke TikTok MAXY!", "data": result}
-    else:
-        raise HTTPException(500, f"Gagal upload ke TikTok: {result.get('error')}")
-
-# --------------------------------------------------------------------
-# 8. HISTORY (TETAP ADA)
-# --------------------------------------------------------------------
-@app.get("/api/v1/podcast/history")
-def get_podcast_history(db: Session = Depends(get_db)):
-    history = db.query(PodcastHistory).all()
-    return {"status": "success", "total": len(history), "data": history}
-
-# di app/main.py, tambahkan setelah endpoint history
-
-@app.get("/api/v1/podcast/rss")
-def get_rss_feed(db: Session = Depends(get_db)):
-    """
-    Generate RSS feed XML dari history podcast.
-    """
-    history = db.query(PodcastHistory).order_by(PodcastHistory.created_at.desc()).limit(20).all()
-
-    # Bangun XML RSS
-    rss_items = []
-    for item in history:
-        # Ambil metadata
-        meta = item.metadata_json or {}
-        title = meta.get("title", f"Episode {item.id}")
-        description = meta.get("description", item.research_summary or "")
-        pub_date = item.created_at.strftime("%a, %d %b %Y %H:%M:%S +0000") if item.created_at else ""
-        # URL audio (jika ada)
-        audio_url = f"{settings.BASE_URL}/api/v1/podcast/download/{item.merged_audio_filename}" if item.merged_audio_filename else ""
-
-        rss_items.append(f"""
-        <item>
-            <title>{title}</title>
-            <description>{description}</description>
-            <pubDate>{pub_date}</pubDate>
-            <guid>{item.id}</guid>
-            <enclosure url="{audio_url}" type="audio/mpeg" length="0"/>
-        </item>
-        """)
-
-    rss_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <rss version="2.0">
-    <channel>
-        <title>VoxFlow AI Podcast</title>
-        <description>Podcast otomatis oleh VoxFlow AI</description>
-        <link>{settings.BASE_URL}</link>
-        {''.join(rss_items)}
-    </channel>
-    </rss>
-    """
-
-    return Response(content=rss_xml, media_type="application/xml")
+        return {
+            "status": "completed",
+            "database_id": db_item.id,
+            "video_filename": video_filename,
+            "video_stream_url": f"/api/v1/podcast/video/{video_filename}"
+        }
+    except Exception as e:
+        logger.error(f"Generate video error: {e}")
+        raise HTTPException(500, f"Error: {str(e)}")
