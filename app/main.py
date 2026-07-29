@@ -1,9 +1,12 @@
 import os
 import re
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+import static_ffmpeg
 
 from app.agents.ai_pipeline import run_ai_pipeline
 from app.middlewares.error_handler import setup_exception_handlers
@@ -13,36 +16,61 @@ from app.utils.audio_merger import merge_podcast_segments
 from app.agents.metadata_agent import run_metadata_agent
 from app.utils.video_generator import create_tiktok_video_with_subtitles
 from app.agents.tiktok_agent import publish_to_tiktok_webhook
-from pydantic import BaseModel
-from app.database import engine, Base
-import static_ffmpeg
 
-# Membuat tabel otomatis saat aplikasi berjalan
-static_ffmpeg.add_paths()
-Base.metadata.create_all(bind=engine)
+# Memastikan direktori penyimpanan selalu tersedia
+os.makedirs("output_audio", exist_ok=True)
+os.makedirs("output_video", exist_ok=True)
 
+
+# Managing Startup & Shutdown Events secara aman (Mencegah Timeout 502)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Dijalankan saat aplikasi mulai menyala
+    try:
+        static_ffmpeg.add_paths()
+        Base.metadata.create_all(bind=engine)
+        print("[STARTUP] Database tables created & static_ffmpeg initialized.")
+    except Exception as e:
+        print(f"[STARTUP ERROR] Gagal menginisialisasi dependensi: {e}")
+    yield
+    # Cleanup (jika ada) saat aplikasi dimatikan
+    print("[SHUTDOWN] Server VoxFlow dimatikan.")
+
+
+# 2. Inisialisasi Aplikasi FastAPI
 app = FastAPI(
-    title=" VoxFlow Ai",
+    title="VoxFlow AI",
     description="API server untuk otomatisasi platform podcast otonom.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
+
+# 3. Konfigurasi CORS (Mendukung All-Origin & Localhost Frontend)
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "*",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Mengizinkan semua domain/localhost frontend
-    allow_credentials=True,
-    allow_methods=["*"],  # Mengizinkan semua method (GET, POST, dll)
+    allow_origins=origins,
+    allow_credentials=False,  # Set False jika allow_origins=["*"] agar tidak kena CORS blocking di browser
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
 setup_exception_handlers(app)
 
+
+# 4. Route Endpoints
 @app.get("/")
 def read_root():
     return {
         "status": "success",
-        "message": "PodFlow AI Backend is running and ready!"
+        "message": "VoxFlow AI Backend is running and ready!"
     }
+
 
 @app.post("/api/v1/podcast/generate")
 def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
@@ -52,7 +80,7 @@ def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
 
     print(f"\n[DEBUG MAIN] Isi asli audio_output: {audio_output} (Tipe: {type(audio_output)})")
 
-    # 2. Ekstrak list segmen audio secara fleksibel
+    # 2. Ekstrak list segmen audio
     segments_list = []
 
     if isinstance(audio_output, dict):
@@ -76,21 +104,16 @@ def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
 
     print(f"[MAIN] Segmen yang siap dikirim ke merger: {segments_list}\n")
 
-    # ==============================================================================
-    # 3. PEMBERSIHAN NAMA FILE (SANITIZATION)
-    # Menghapus karakter terlarang Windows (\ / : * ? " < > |) dari keyword
-    # ==============================================================================
-    clean_keyword = re.sub(r'[\\/*?:"<>|]', '', keyword)  # Hapus karakter ilegal
-    clean_keyword = clean_keyword.replace(' ', '_')      # Ganti spasi dengan underscore
-    clean_keyword = clean_keyword[:50]                   # Batasi maksimal 50 karakter
+    # 3. Sanitasi Nama File
+    clean_keyword = re.sub(r'[\\/*?:"<>|]', '', keyword)
+    clean_keyword = clean_keyword.replace(' ', '_')
+    clean_keyword = clean_keyword[:50]
 
     output_name = f"podcast_{clean_keyword}.mp3"
-    # ==============================================================================
 
-    # 4. Jalankan Penggabungan Audio
+    # 4. Penggabungan Audio & Pembuatan Video
     final_audio_filename = merge_podcast_segments(segments_list, output_filename=output_name)
     video_filename = create_tiktok_video_with_subtitles(final_audio_filename, metadata)
-    # tiktok_status = publish_to_tiktok_webhook(video_filename, metadata)
 
     # 5. Simpan ke Database
     db_item = PodcastHistory(
@@ -110,13 +133,14 @@ def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
         "research_summary": research_data,
         "generated_script": script_json,
         "full_audio_file": final_audio_filename,
-        "video_output" : {
+        "video_output": {
             "file": video_filename,
             "download_url": f"/api/v1/podcast/video/{video_filename}"
         },
         "metadata": metadata,
         "message": "Pipeline podcast berhasil diselesaikan dan digabung!"
     }
+
 
 @app.get("/api/v1/podcast/history")
 def get_podcast_history(db: Session = Depends(get_db)):
@@ -126,6 +150,7 @@ def get_podcast_history(db: Session = Depends(get_db)):
         "total": len(history),
         "data": history
     }
+
 
 @app.get("/api/v1/podcast/download/{filename}")
 def download_audio_file(filename: str):
@@ -144,6 +169,7 @@ def download_audio_file(filename: str):
         filename=filename
     )
 
+
 class TikTokUploadRequest(BaseModel):
     video_filename: str
     title: str
@@ -151,11 +177,9 @@ class TikTokUploadRequest(BaseModel):
     tags: list[str] = []
     cta: str = "Jangan lupa follow!"
 
+
 @app.post("/api/v1/podcast/upload-tiktok")
 def upload_to_tiktok_manual(payload: TikTokUploadRequest):
-    """
-    Endpoint yang dipanggil oleh Frontend saat tombol 'Upload ke TikTok' diklik.
-    """
     metadata = {
         "title": payload.title,
         "description": payload.description,
@@ -163,13 +187,12 @@ def upload_to_tiktok_manual(payload: TikTokUploadRequest):
         "cta": payload.cta
     }
 
-    # Panggil fungsi agent TikTok
     result = publish_to_tiktok_webhook(payload.video_filename, metadata)
 
     if result.get("status") in ["success", "test_success"]:
         return {
             "status": "success",
-            "message": "Video berhasil dipublikasikan ke TikTok MAXY!",
+            "message": "Video berhasil dipublikasikan ke TikTok!",
             "data": result
         }
     else:
@@ -177,14 +200,25 @@ def upload_to_tiktok_manual(payload: TikTokUploadRequest):
             status_code=500,
             detail=f"Gagal upload ke TikTok: {result.get('error')}"
         )
+
+
 @app.get("/api/v1/podcast/video/{video_filename}")
 def get_video_stream(video_filename: str):
-    """
-    Endpoint untuk menyajikan (stream/download) file MP4 ke Frontend.
-    """
     video_path = os.path.join("output_video", video_filename)
 
     if not os.path.exists(video_path):
         raise HTTPException(status_code=404, detail="File video tidak ditemukan")
 
-    return FileResponse(video_path, media_type="video/mp4")
+    return FileResponse(
+        path=video_path,
+        media_type="video/mp4",
+        filename=video_filename
+    )
+
+
+# Entrypoint untuk Railway/Local execution
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    # Gunakan "main:app" jika main.py berada di root direktori
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
