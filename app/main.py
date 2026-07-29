@@ -186,62 +186,55 @@ def trigger_podcast_generation(
         from app.agents.ai_pipeline import run_ai_pipeline
 
         def run_pipeline():
-    try:
-        from app.database.database import SessionLocal
-        from app.agents.ai_pipeline import run_ai_pipeline
-        import re
+            try:
+                from app.database.database import SessionLocal
+                from app.agents.ai_pipeline import run_ai_pipeline
 
-        bg_db = SessionLocal()
-        try:
-            item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-            if item:
-                # === SET STATUS AWAL ===
-                item.status = "processing"
-                item.progress = 5
-                item.agent_status = {
-                    "research": "pending",
-                    "script": "pending",
-                    "audio": "pending",
-                    "metadata": "pending"
-                }
-                bg_db.commit()
-                print(f"[MAIN] Job {db_item.id} initialized")
+                bg_db = SessionLocal()
+                try:
+                    item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
+                    if item:
+                        item.status = "processing"
+                        item.progress = 5
+                        item.agent_status = {
+                            "research": "pending",
+                            "script": "pending",
+                            "audio": "pending",
+                            "metadata": "pending"
+                        }
+                        bg_db.commit()
+                        print(f"[MAIN] Job {db_item.id} initialized")
 
-                # === JALANKAN PIPELINE DENGAN JOB_ID ===
-                research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword, db_item.id)
+                        # Jalankan pipeline dengan job_id
+                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword, db_item.id)
 
-                # === UPDATE HASIL ===
-                item.research_summary = str(research_data)
-                item.metadata_json = metadata
-                item.audio_segments = audio_segments
-                item.status = "completed"
-                item.progress = 100
-                item.agent_status = {
-                    "research": "done",
-                    "script": "done",
-                    "audio": "done",
-                    "metadata": "done"
-                }
-                bg_db.commit()
-                print(f"[MAIN] Job {db_item.id} completed successfully")
+                        # Update hasil
+                        item.research_summary = str(research_data)
+                        item.metadata_json = metadata
+                        item.audio_segments = audio_segments
+                        item.status = "completed"
+                        item.progress = 100
+                        item.agent_status = {
+                            "research": "done",
+                            "script": "done",
+                            "audio": "done",
+                            "metadata": "done"
+                        }
+                        bg_db.commit()
+                        logger.info(f"Pipeline completed for job {db_item.id}")
 
-        except Exception as e:
-            print(f"[MAIN] Pipeline error: {e}")
-            import traceback
-            traceback.print_exc()
-            if bg_db:
-                item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-                if item:
-                    item.status = "failed"
-                    item.error_message = str(e)
-                    bg_db.commit()
-        finally:
-            bg_db.close()
-    except Exception as e:
-        print(f"[MAIN] Background task error: {e}")
-        import traceback
-        traceback.print_exc()
-
+                except Exception as e:
+                    logger.error(f"Pipeline error: {e}", exc_info=True)
+                    if bg_db:
+                        item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
+                        if item:
+                            item.status = "failed"
+                            item.error_message = str(e)
+                            bg_db.commit()
+                finally:
+                    bg_db.close()
+            except Exception as e:
+                logger.error(f"Background task error: {e}", exc_info=True)
 
         background_tasks.add_task(run_pipeline)
 
