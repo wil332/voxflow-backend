@@ -4,12 +4,12 @@ from app.config import settings
 
 def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
     webhook_url = getattr(settings, "TIKTOK_WEBHOOK_URL", "")
-    
+
     # 🔗 URL video publik yang bisa diakses (Sesuaikan domain jika sudah dipublish)
     # Jika masih di local/dev, gunakan IP/Host lokal kamu
     base_url = getattr(settings, "BASE_URL", "http://localhost:8000")
     video_url = f"{base_url}/api/v1/podcast/video/{video_filename}"
-    
+
     # Format Hashtags
     hashtags = " ".join([f"#{tag.replace(' ', '')}" for tag in metadata.get("tags", [])])
     caption = f"🎙️ {metadata.get('title', '')}\n\n{metadata.get('description', '')}\n\n{hashtags}"
@@ -30,7 +30,7 @@ def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
     try:
         # Kirim data ke Webhook TikTok MAXY
         response = requests.post(webhook_url, json=payload, timeout=30)
-        
+
         if response.status_code in [200, 201]:
             print("[TIKTOK AGENT SUCCESS] Berhasil terkirim ke Webhook MAXY!")
             return {
