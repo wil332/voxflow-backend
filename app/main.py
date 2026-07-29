@@ -322,9 +322,14 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
 # ============================================================
 # DOWNLOAD & STREAM
 # ============================================================
+# app/main.py - bagian download dan video
+
 @app.get("/api/v1/podcast/download/{filename}")
 def download_audio_file(filename: str):
     try:
+        # Pastikan direktori ada
+        os.makedirs(settings.OUTPUT_AUDIO_DIR, exist_ok=True)
+
         file_path = os.path.join(settings.OUTPUT_AUDIO_DIR, filename)
         if not os.path.exists(file_path):
             raise HTTPException(404, f"File '{filename}' tidak ditemukan.")
@@ -336,6 +341,8 @@ def download_audio_file(filename: str):
 @app.get("/api/v1/podcast/video/{video_filename}")
 def get_video_stream(video_filename: str):
     try:
+        os.makedirs(settings.OUTPUT_VIDEO_DIR, exist_ok=True)
+
         video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
         if not os.path.exists(video_path):
             raise HTTPException(404, "File video tidak ditemukan")
