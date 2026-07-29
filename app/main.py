@@ -2,7 +2,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -16,16 +16,16 @@ from app.utils.audio_merger import merge_podcast_segments
 from app.agents.metadata_agent import run_metadata_agent
 from app.utils.video_generator import create_tiktok_video_with_subtitles
 from app.agents.tiktok_agent import publish_to_tiktok_webhook
+from app.utils.rss_generator import generate_rss_feed  # <-- BARU
+from app.config import settings  # <-- BARU, dibutuhkan buat BASE_URL
 
 # Memastikan direktori penyimpanan selalu tersedia
 os.makedirs("output_audio", exist_ok=True)
 os.makedirs("output_video", exist_ok=True)
 
 
-# Managing Startup & Shutdown Events secara aman (Mencegah Timeout 502)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Dijalankan saat aplikasi mulai menyala
     try:
         static_ffmpeg.add_paths()
         Base.metadata.create_all(bind=engine)
@@ -33,11 +33,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[STARTUP ERROR] Gagal menginisialisasi dependensi: {e}")
     yield
-    # Cleanup (jika ada) saat aplikasi dimatikan
     print("[SHUTDOWN] Server VoxFlow dimatikan.")
 
 
-# 2. Inisialisasi Aplikasi FastAPI
 app = FastAPI(
     title="VoxFlow AI",
     description="API server untuk otomatisasi platform podcast otonom.",
@@ -45,7 +43,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 3. Konfigurasi CORS (Mendukung All-Origin & Localhost Frontend)
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -55,7 +52,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=False,  # Set False jika allow_origins=["*"] agar tidak kena CORS blocking di browser
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -63,7 +60,6 @@ app.add_middleware(
 setup_exception_handlers(app)
 
 
-# 4. Route Endpoints
 @app.get("/")
 def read_root():
     return {
@@ -73,7 +69,12 @@ def read_root():
 
 
 @app.post("/api/v1/podcast/generate")
-def trigger_podcast_generation(keyword: str, db: Session = Depends(get_db)):
+def trigger_podcast_generation(
+    keyword: str,
+    host_count: int = 2,          # <-- BARU, sekarang diterima (belum dipakai di prompt agent, lihat catatan bawah)
+    language_style: str = "santai",  # <-- BARU
+    db: Session = Depends(get_db)
+):
     # 1. Jalankan AI Pipeline
     research_data, script_json, audio_output = run_ai_pipeline(keyword)
     metadata = run_metadata_agent(keyword, research_data)
@@ -216,9 +217,21 @@ def get_video_stream(video_filename: str):
     )
 
 
+# ===================== BARU: RSS FEED ENDPOINT =====================
+@app.get("/api/v1/podcast/rss")
+def get_rss_feed(db: Session = Depends(get_db)):
+    """
+    Menyajikan RSS Feed XML dinamis, format standar yang bisa langsung
+    disubmit ke Spotify for Podcasters / Apple Podcasts Connect.
+    """
+    base_url = getattr(settings, "BASE_URL", "http://localhost:8000")
+    rss_xml = generate_rss_feed(db, base_url=base_url)
+    return Response(content=rss_xml, media_type="application/rss+xml")
+# ======================================================================
+
+
 # Entrypoint untuk Railway/Local execution
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    # Gunakan "main:app" jika main.py berada di root direktori
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
