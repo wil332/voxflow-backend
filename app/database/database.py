@@ -5,33 +5,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Build database URL
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not SQLALCHEMY_DATABASE_URL:
-    # fallback ke variabel individual (untuk MySQL)
-    db_host = os.getenv("MYSQLHOST") or os.getenv("DB_HOST")
-    if db_host:
-        db_user = os.getenv("MYSQLUSER", os.getenv("DB_USER"))
-        db_password = os.getenv("MYSQLPASSWORD", os.getenv("DB_PASSWORD", ""))
-        db_port = os.getenv("MYSQLPORT", os.getenv("DB_PORT", "3306"))
-        db_name = os.getenv("MYSQLDATABASE", os.getenv("DB_NAME"))
-        if not all([db_user, db_name]):
-            raise ValueError("MYSQLUSER dan MYSQLDATABASE wajib diisi jika DATABASE_URL tidak ada.")
-        SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-    else:
-        raise ValueError("DATABASE_URL atau variabel database environment wajib diisi!")
+    # Fallback ke SQLite
+    SQLALCHEMY_DATABASE_URL = "sqlite:///./podflow.db"
+    print("⚠️ WARNING: Using SQLite fallback database. Set DATABASE_URL for production.")
 
-# Jika URL diawali dengan postgresql://, gunakan driver psycopg2
-if SQLALCHEMY_DATABASE_URL.startswith("postgresql://"):
-    # Pastikan tidak ada "postgresql+psycopg2" ganda
-    if not SQLALCHEMY_DATABASE_URL.startswith("postgresql+psycopg2://"):
-        SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
-elif SQLALCHEMY_DATABASE_URL.startswith("mysql://"):
+# Fix mysql:// to mysql+pymysql://
+if SQLALCHEMY_DATABASE_URL.startswith("mysql://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("mysql://", "mysql+pymysql://", 1)
 
-# Buat engine dengan pengaturan pool (baik untuk PostgreSQL)
+# Create engine
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {},
     pool_pre_ping=True,
 )
 
