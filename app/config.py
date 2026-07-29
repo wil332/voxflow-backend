@@ -8,14 +8,14 @@ class Settings:
     PROJECT_NAME: str = "VoxFlow Ai"
     VERSION: str = "1.0.0"
 
-    QWEN_API_KEY: str = os.getenv("QWEN_API_KEY", "")
-    AGNES_API_KEY: str = os.getenv("AGNES_API_KEY", "")
-    ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
-    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    TIKTOK_WEBHOOK_URL: str = os.getenv("TIKTOK_WEBHOOK_URL", "")
-    BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
+    QWEN_API_KEY: str = os.getenv("QWEN_API_KEY", "").strip()
+    AGNES_API_KEY: str = os.getenv("AGNES_API_KEY", "").strip()
+    ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "").strip()
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
+    TIKTOK_WEBHOOK_URL: str = os.getenv("TIKTOK_WEBHOOK_URL", "").strip()
+    BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000").strip()
 
     STORAGE_DIR: str = os.getenv("STORAGE_DIR", ".")
 
