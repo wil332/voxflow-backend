@@ -15,5 +15,5 @@ gTTS>=2.5.0
 elevenlabs>=0.2.27
 static-ffmpeg
 openai
-pyaudioop; python_version >= "3.13"
 python-multipart
+pyaudioop
