@@ -14,6 +14,7 @@ from app.agents.metadata_agent import run_metadata_agent
 from app.utils.video_generator import create_tiktok_video_with_subtitles
 from app.agents.tiktok_agent import publish_to_tiktok_webhook
 from pydantic import BaseModel
+from app.database import engine, Base
 
 # Membuat tabel otomatis saat aplikasi berjalan
 Base.metadata.create_all(bind=engine)
