@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import static_ffmpeg
+from fastapi.responses import Response
 
 from app.config import settings
 from app.agents.ai_pipeline import run_ai_pipeline
@@ -267,3 +268,46 @@ def upload_to_tiktok_manual(payload: TikTokUploadRequest):
 def get_podcast_history(db: Session = Depends(get_db)):
     history = db.query(PodcastHistory).all()
     return {"status": "success", "total": len(history), "data": history}
+
+# di app/main.py, tambahkan setelah endpoint history
+
+@app.get("/api/v1/podcast/rss")
+def get_rss_feed(db: Session = Depends(get_db)):
+    """
+    Generate RSS feed XML dari history podcast.
+    """
+    history = db.query(PodcastHistory).order_by(PodcastHistory.created_at.desc()).limit(20).all()
+
+    # Bangun XML RSS
+    rss_items = []
+    for item in history:
+        # Ambil metadata
+        meta = item.metadata_json or {}
+        title = meta.get("title", f"Episode {item.id}")
+        description = meta.get("description", item.research_summary or "")
+        pub_date = item.created_at.strftime("%a, %d %b %Y %H:%M:%S +0000") if item.created_at else ""
+        # URL audio (jika ada)
+        audio_url = f"{settings.BASE_URL}/api/v1/podcast/download/{item.merged_audio_filename}" if item.merged_audio_filename else ""
+
+        rss_items.append(f"""
+        <item>
+            <title>{title}</title>
+            <description>{description}</description>
+            <pubDate>{pub_date}</pubDate>
+            <guid>{item.id}</guid>
+            <enclosure url="{audio_url}" type="audio/mpeg" length="0"/>
+        </item>
+        """)
+
+    rss_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+    <channel>
+        <title>VoxFlow AI Podcast</title>
+        <description>Podcast otomatis oleh VoxFlow AI</description>
+        <link>{settings.BASE_URL}</link>
+        {''.join(rss_items)}
+    </channel>
+    </rss>
+    """
+
+    return Response(content=rss_xml, media_type="application/xml")
