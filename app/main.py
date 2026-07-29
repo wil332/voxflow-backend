@@ -330,7 +330,13 @@ def download_audio_file(filename: str):
         # Pastikan direktori ada
         os.makedirs(settings.OUTPUT_AUDIO_DIR, exist_ok=True)
 
+        logger.info(f"OUTPUT_AUDIO_DIR = {settings.OUTPUT_AUDIO_DIR}")
+        logger.info(f"Filename request = {filename}")
+
         file_path = os.path.join(settings.OUTPUT_AUDIO_DIR, filename)
+
+        logger.info(f"Full path = {file_path}")
+        logger.info(f"Exists = {os.path.exists(file_path)}")
         if not os.path.exists(file_path):
             raise HTTPException(404, f"File '{filename}' tidak ditemukan.")
         return FileResponse(path=file_path, media_type="audio/mpeg", filename=filename)
@@ -343,7 +349,13 @@ def get_video_stream(video_filename: str):
     try:
         os.makedirs(settings.OUTPUT_VIDEO_DIR, exist_ok=True)
 
+        logger.info(f"OUTPUT_VIDEO_DIR = {settings.OUTPUT_VIDEO_DIR}")
+        logger.info(f"Video request = {video_filename}")
+
         video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
+
+        logger.info(f"Video path = {video_path}")
+        logger.info(f"Exists = {os.path.exists(video_path)}")
         if not os.path.exists(video_path):
             raise HTTPException(404, "File video tidak ditemukan")
         return FileResponse(video_path, media_type="video/mp4")
