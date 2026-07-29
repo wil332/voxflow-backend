@@ -498,6 +498,64 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Generate video error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
+
+
+
+# RSS Feed
+@app.get("/api/v1/podcast/rss")
+def generate_rss_feed(db: Session = Depends(get_db)):
+    """
+    Generate RSS feed untuk distribusi ke Spotify/Apple Podcasts.
+    """
+    from fastapi.responses import Response
+    from datetime import datetime
+
+    episodes = db.query(PodcastHistory).filter(
+        PodcastHistory.status == "completed"
+    ).order_by(PodcastHistory.created_at.desc()).all()
+
+    base_url = settings.BASE_URL
+
+    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>VoxFlow AI Podcast</title>
+    <description>Podcast otomatis tentang AI, teknologi, dan inovasi untuk audiens Indonesia.</description>
+    <link>{base_url}</link>
+    <language>id</language>
+    <itunes:author>VoxFlow AI</itunes:author>
+    <itunes:category text="Technology"/>
+    <itunes:explicit>no</itunes:explicit>
+'''
+
+    for ep in episodes:
+        title = ep.metadata_json.get("title", ep.keyword) if ep.metadata_json else ep.keyword
+        desc = ep.metadata_json.get("description", "") if ep.metadata_json else ""
+
+        audio_url = f"{base_url}/api/v1/podcast/download/{ep.merged_audio_filename}" if ep.merged_audio_filename else ""
+        pub_date = ep.created_at.strftime('%a, %d %b %Y %H:%M:%S GMT') if ep.created_at else datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+        xml += f'''
+    <item>
+      <title>{title}</title>
+      <description>{desc}</description>
+      <enclosure url="{audio_url}" type="audio/mpeg" length="0"/>
+      <guid>episode-{ep.id}</guid>
+      <pubDate>{pub_date}</pubDate>
+      <itunes:duration>8:30</itunes:duration>
+    </item>
+'''
+
+    xml += '''
+  </channel>
+</rss>
+'''
+
+    return Response(
+        content=xml,
+        media_type="application/rss+xml",
+        headers={"Content-Disposition": "inline; filename=feed.xml"}
+    )
 # ============================================================
 # PUBLISH / RETRY PUBLISH KE TIKTOK (manual)
 # ============================================================
