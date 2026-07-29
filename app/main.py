@@ -347,10 +347,12 @@ def get_video_stream(video_filename: str):
 # ============================================================
 # MERGE AUDIO (manual / retry)
 # ============================================================
+
 @app.post("/api/v1/podcast/merge-audio/{database_id}")
 def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
     try:
         from app.utils.audio_merger import merge_podcast_segments
+        from app.utils.video_generator import create_tiktok_video_with_subtitles
 
         db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
         if not db_item:
@@ -360,26 +362,53 @@ def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
         if db_item.status != "completed":
             raise HTTPException(400, "Podcast belum selesai diproses.")
 
+        # ============================================================
+        # MERGE AUDIO
+        # ============================================================
         clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
         clean_keyword = clean_keyword.replace(' ', '_')[:50]
         merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
 
-        merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
-
+        merged_audio_filename = merge_podcast_segments(
+            db_item.audio_segments,
+            merged_filename,
+            cleanup_segments=False
+        )
         db_item.merged_audio_filename = merged_audio_filename
         db.commit()
         db.refresh(db_item)
+
+        # ============================================================
+        # 🚀 AUTO-RENDER VIDEO SETELAH MERGE AUDIO
+        # ============================================================
+        video_filename = None
+        try:
+            print(f"[VIDEO] 🎬 Auto-rendering video for episode {database_id}")
+            metadata = db_item.metadata_json or {}
+            video_filename = create_tiktok_video_with_subtitles(merged_audio_filename, metadata)
+
+            if video_filename:
+                db_item.video_filename = video_filename
+                db.commit()
+                db.refresh(db_item)
+                print(f"[VIDEO] ✅ Video rendered: {video_filename}")
+            else:
+                print(f"[VIDEO] ❌ Video render failed")
+        except Exception as e:
+            print(f"[VIDEO] ❌ Video render error: {e}")
+            # Jangan gagalkan merge audio jika video gagal
 
         return {
             "status": "completed",
             "database_id": db_item.id,
             "merged_audio_filename": merged_audio_filename,
-            "download_url": f"/api/v1/podcast/download/{merged_audio_filename}"
+            "video_filename": video_filename,
+            "download_url": f"/api/v1/podcast/download/{merged_audio_filename}",
+            "video_url": f"/api/v1/podcast/video/{video_filename}" if video_filename else None
         }
     except Exception as e:
         logger.error(f"Merge audio error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
-
 # ============================================================
 # GENERATE VIDEO (manual / retry)
 # ============================================================
