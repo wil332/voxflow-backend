@@ -161,7 +161,18 @@ def run_ai_pipeline(
 
     # 2. Script Agent (Agnes)
     try:
-        script_result = run_script_agent(research_result)
+        script_result = script_result = run_script_agent(
+    research_result,
+    language=language,
+    tone=tone,
+    voice=voice,
+    duration=duration,
+    host_count=host_count,
+)
+        print("================ SCRIPT ================")
+        for s in script_result[:5]:
+            print(s)
+        print("========================================")
         print(f"[PIPELINE] Script completed, {len(script_result)} segments")
     except Exception as e:
         print(f"[PIPELINE] Script failed: {e}")
