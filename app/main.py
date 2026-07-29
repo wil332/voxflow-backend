@@ -383,11 +383,15 @@ def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
 # ============================================================
 # GENERATE VIDEO (manual / retry)
 # ============================================================
+# app/main.py - bagian generate-video
+
 @app.post("/api/v1/podcast/generate-video/{database_id}")
 def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
     try:
         from app.utils.video_generator import create_tiktok_video_with_subtitles
         from app.utils.audio_merger import merge_podcast_segments
+        from app.agents.tiktok_agent import publish_to_tiktok_webhook
+        from datetime import datetime
 
         db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
         if not db_item:
@@ -397,14 +401,26 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
         if db_item.status != "completed":
             raise HTTPException(400, "Podcast belum selesai diproses.")
 
+        # === RENDER VIDEO ===
         if not db_item.merged_audio_filename:
             clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
             clean_keyword = clean_keyword.replace(' ', '_')[:50]
             merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
-            merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
+
+            # === PANGGIL DENGAN cleanup_segments=False ===
+            merged_audio_filename = merge_podcast_segments(
+                db_item.audio_segments,
+                merged_filename,
+                cleanup_segments=False  # <-- PASTIKAN PARAMETER INI ADA
+            )
             db_item.merged_audio_filename = merged_audio_filename
             db.commit()
             db.refresh(db_item)
+
+        # === CEK APAKAH FILE AUDIO BERHASIL ===
+        audio_path = os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename)
+        if not os.path.exists(audio_path):
+            raise HTTPException(500, f"File audio tidak ditemukan: {audio_path}")
 
         metadata = db_item.metadata_json or {}
         video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
@@ -413,6 +429,31 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
             raise HTTPException(500, "Gagal merender video.")
 
         db_item.video_filename = video_filename
+        db_item.tiktok_status = "uploading"
+        db.commit()
+        db.refresh(db_item)
+
+        # ============================================================
+        # 🚀 AUTO-UPLOAD KE TIKTOK
+        # ============================================================
+        try:
+            print(f"[TIKTOK] 🚀 Auto-uploading video: {video_filename}")
+            result = publish_to_tiktok_webhook(video_filename, metadata)
+
+            if result.get("status") in ["success", "test_success"]:
+                db_item.tiktok_status = "success"
+                db_item.tiktok_url = result.get("data", {}).get("url") or "Uploaded successfully"
+                db_item.tiktok_uploaded_at = datetime.utcnow()
+                print(f"[TIKTOK] ✅ Upload success!")
+            else:
+                db_item.tiktok_status = "failed"
+                db_item.tiktok_error = result.get("error", "Unknown error")
+                print(f"[TIKTOK] ❌ Upload failed: {db_item.tiktok_error}")
+        except Exception as e:
+            db_item.tiktok_status = "failed"
+            db_item.tiktok_error = str(e)
+            print(f"[TIKTOK] ❌ Upload error: {e}")
+
         db.commit()
         db.refresh(db_item)
 
@@ -420,12 +461,14 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
             "status": "completed",
             "database_id": db_item.id,
             "video_filename": video_filename,
-            "video_stream_url": f"/api/v1/podcast/video/{video_filename}"
+            "video_stream_url": f"/api/v1/podcast/video/{video_filename}",
+            "tiktok_status": db_item.tiktok_status,
+            "tiktok_url": db_item.tiktok_url,
+            "tiktok_error": db_item.tiktok_error,
         }
     except Exception as e:
         logger.error(f"Generate video error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
-
 # ============================================================
 # PUBLISH / RETRY PUBLISH KE TIKTOK (manual)
 # ============================================================
