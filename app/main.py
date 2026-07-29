@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import static_ffmpeg
 from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.agents.ai_pipeline import run_ai_pipeline
@@ -29,7 +30,15 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "https://voxflow-frontend.vercel.app",  # jika deploy di Vercel
+        "https://voxflow-frontend-production.up.railway.app",  # jika deploy di Railway
+        "https://*.railway.app",  # wildcard untuk semua subdomain Railway
+        "https://*.vercel.app",   # wildcard untuk semua subdomain Vercel
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
