@@ -1,12 +1,21 @@
-import whisper
 import os
+from openai import OpenAI
+
+# Inisialisasi OpenAI client (menggunakan OPENAI_API_KEY dari env Vercel)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def generate_ass_subtitles(audio_path: str, output_ass_path: str):
     """
-    Mengubah MP3 menjadi file subtitle .ass dengan gaya teks modern TikTok
+    Mengubah MP3 menjadi file subtitle .ass menggunakan OpenAI Whisper API Cloud
     """
-    model = whisper.load_model("base")  # Menggunakan model ringan
-    result = model.transcribe(audio_path, language="id")
+    # Mengirim file audio ke API OpenAI (tidak mengunduh model di server Vercel)
+    with open(audio_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            language="id",
+            response_format="verbose_json"
+        )
 
     # Header format .ass dengan styling warna TikTok (#2563EB & #06B6D4)
     ass_header = """[Script Info]
@@ -21,13 +30,21 @@ Style: TikTok,Arial,55,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    
+
+    # 'response' dari API berbentuk dictionary/object yang berisi list segments
+    segments = response.segments if hasattr(response, 'segments') else response.get('segments', [])
+
     with open(output_ass_path, "w", encoding="utf-8") as f:
         f.write(ass_header)
-        for segment in result["segments"]:
-            start = format_timestamp(segment["start"])
-            end = format_timestamp(segment["end"])
-            text = segment["text"].strip().replace("'", "")
+        for segment in segments:
+            # Mengakses nilai dari attribute object atau dictionary API
+            start_time = segment.start if hasattr(segment, 'start') else segment["start"]
+            end_time = segment.end if hasattr(segment, 'end') else segment["end"]
+            text_content = segment.text if hasattr(segment, 'text') else segment["text"]
+
+            start = format_timestamp(start_time)
+            end = format_timestamp(end_time)
+            text = text_content.strip().replace("'", "")
             f.write(f"Dialogue: 0,{start},{end},TikTok,,0,0,0,,{text}\n")
 
 def format_timestamp(seconds: float) -> str:
