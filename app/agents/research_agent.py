@@ -43,9 +43,7 @@ def run_research_agent(
 
     language_instruction = (
         "Seluruh hasil riset WAJIB menggunakan Bahasa Indonesia."
-        if language == "id"
-        else
-        "The entire research MUST be written in English."
+
     )
 
     tone_instruction = {

@@ -163,7 +163,7 @@ def run_ai_pipeline(
     try:
         script_result = script_result = run_script_agent(
     research_result,
-    language=language,
+    language='id',
     tone=tone,
     voice=voice,
     duration=duration,

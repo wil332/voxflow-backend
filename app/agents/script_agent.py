@@ -23,9 +23,7 @@ def run_scriptwriter_agent(
 
     language_instruction = (
         "Seluruh dialog WAJIB menggunakan Bahasa Indonesia."
-        if language == "id"
-        else
-        "The entire conversation MUST be written in English."
+
     )
 
     tone_instruction = {
