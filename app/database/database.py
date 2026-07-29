@@ -1,14 +1,23 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Jika menggunakan SQLite:
-# SQLALCHEMY_DATABASE_URL = "sqlite:///./podflow.db"
+# Ambil dari Environment Variable Vercel / .env lokal
+# Jika tidak ada di .env, default pakai MySQL lokal
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL", 
+    "mysql+pymysql://root:@localhost:3306/podflow_db"
+)
 
-# Jika menggunakan MySQL (ubah sesuai username & password Anda):
-SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:@localhost:3306/podflow_db"
+# Otomatis perbaiki prefix jika menggunakan mysql://
+if SQLALCHEMY_DATABASE_URL.startswith("mysql://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("mysql://", "mysql+pymysql://", 1)
 
+# Inisialisasi Engine
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {}
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {},
+    pool_pre_ping=True
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
