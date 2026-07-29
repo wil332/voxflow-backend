@@ -14,7 +14,7 @@ def run_research_agent(keyword: str) -> str:
     }
     
     system_prompt = (
-        "Anda adalah AI Research Assistant untuk proyek PodFlow AI Backend.\n"
+        "Anda adalah AI Research Assistant untuk proyek VoxFlow AI.\n"
         "PANDUAN RISET KEYWORD & SEO HACKATHON:\n"
         "1. Educational Focus (Informational Intent): Jika keyword berfokus pada informasi/edukasi "
         "(seperti 'podcast AI' atau 'podcast automation'), sajikan materi edukatif yang mendalam, tren terbaru, dan konsep dasarnya.\n"

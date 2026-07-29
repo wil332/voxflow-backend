@@ -16,8 +16,8 @@ def run_scriptwriter_agent(research_text: str) -> list:
     
     # Prompt dipertegas agar menghasilkan minimal 8-12 percakapan bergantian
     system_prompt = (
-    "Anda adalah Scriptwriter Podcast Profesional untuk PodFlow AI.\n"
-    "TUGAS: Ubah data riset menjadi naskah percakapan podcast antara Budi dan Siti.\n\n"
+    "Anda adalah Scriptwriter Podcast Profesional untuk VoxFlow  AI.\n"
+    "TUGAS: Ubah data riset menjadi naskah percakapan podcast antara Budi dan Richel.\n\n"
     "KARAKTER:\n"
     "- Budi: Antusias, suka humor lokal, pemikir kritis.\n"
     "- Richel: Inisiatif, edukatif, dan lebih terstruktur.\n\n"

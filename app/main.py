@@ -19,7 +19,7 @@ from pydantic import BaseModel
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="PodFlow AI Backend",
+    title=" VoxFlow Ai",
     description="API server untuk otomatisasi platform podcast otonom.",
     version="1.0.0"
 )
