@@ -166,6 +166,9 @@ def trigger_podcast_generation(
             )
 
         # Buat entri database
+        # CATATAN: key "tiktok" ditambahkan di sini supaya konsisten dengan
+        # yang dipakai ai_pipeline.py untuk melacak status upload TikTok
+        # secara terpisah dari "metadata" (SEO metadata generation).
         db_item = PodcastHistory(
             keyword=keyword,
             status="processing",
@@ -174,7 +177,8 @@ def trigger_podcast_generation(
                 "research": "pending",
                 "script": "pending",
                 "audio": "pending",
-                "metadata": "pending"
+                "metadata": "pending",
+                "tiktok": "pending"
             }
         )
         db.add(db_item)
@@ -182,8 +186,6 @@ def trigger_podcast_generation(
         db.refresh(db_item)
 
         logger.info(f"Created job {db_item.id} for keyword: {keyword}")
-
-        from app.agents.ai_pipeline import run_ai_pipeline
 
         def run_pipeline():
             try:
@@ -200,26 +202,45 @@ def trigger_podcast_generation(
                             "research": "pending",
                             "script": "pending",
                             "audio": "pending",
-                            "metadata": "pending"
+                            "metadata": "pending",
+                            "tiktok": "pending"
                         }
                         bg_db.commit()
                         print(f"[MAIN] Job {db_item.id} initialized")
 
-                        # Jalankan pipeline dengan job_id
+                        # Jalankan pipeline dengan job_id.
+                        # CATATAN: run_ai_pipeline sekarang JUGA menjalankan
+                        # merge audio -> render video -> upload TikTok secara
+                        # otomatis di dalamnya sebelum return, jadi baris ini
+                        # baru selesai setelah semua tahap itu (termasuk
+                        # publish TikTok) sudah dicoba.
                         research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword, db_item.id)
 
-                        # Update hasil
+                        # PENTING: refresh dulu supaya kita dapat agent_status
+                        # dan tiktok_status TERBARU yang sudah di-commit oleh
+                        # sesi database lain di dalam run_ai_pipeline (termasuk
+                        # hasil auto-publish TikTok). Tanpa refresh, "item" di
+                        # sini masih memegang data lama dari sebelum pipeline jalan.
+                        bg_db.refresh(item)
+
                         item.research_summary = str(research_data)
                         item.metadata_json = metadata
                         item.audio_segments = audio_segments
                         item.status = "completed"
                         item.progress = 100
-                        item.agent_status = {
+
+                        # Merge, JANGAN overwrite penuh -- supaya key "tiktok"
+                        # yang sudah di-set oleh auto-publish tidak hilang
+                        # tertimpa dict baru yang tidak punya key itu.
+                        merged_agent_status = dict(item.agent_status or {})
+                        merged_agent_status.update({
                             "research": "done",
                             "script": "done",
                             "audio": "done",
-                            "metadata": "done"
-                        }
+                            "metadata": "done",
+                        })
+                        item.agent_status = merged_agent_status
+
                         bg_db.commit()
                         logger.info(f"Pipeline completed for job {db_item.id}")
 
@@ -274,6 +295,12 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
             "progress": item.progress,
             "agent_status": item.agent_status,
             "error_message": item.error_message,
+            # Status publish TikTok dikirim selalu (bukan hanya saat completed)
+            # supaya frontend bisa menampilkan progres "uploading..." secara
+            # real-time lewat polling, sama seperti agent lain.
+            "tiktok_status": item.tiktok_status,
+            "tiktok_url": item.tiktok_url,
+            "tiktok_error": item.tiktok_error,
         }
 
         if item.status == "completed":
@@ -318,7 +345,7 @@ def get_video_stream(video_filename: str):
         raise HTTPException(500, f"Error: {str(e)}")
 
 # ============================================================
-# MERGE AUDIO
+# MERGE AUDIO (manual / retry)
 # ============================================================
 @app.post("/api/v1/podcast/merge-audio/{database_id}")
 def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
@@ -354,7 +381,7 @@ def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
         raise HTTPException(500, f"Error: {str(e)}")
 
 # ============================================================
-# GENERATE VIDEO
+# GENERATE VIDEO (manual / retry)
 # ============================================================
 @app.post("/api/v1/podcast/generate-video/{database_id}")
 def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
@@ -397,4 +424,57 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
         }
     except Exception as e:
         logger.error(f"Generate video error: {e}")
+        raise HTTPException(500, f"Error: {str(e)}")
+
+# ============================================================
+# PUBLISH / RETRY PUBLISH KE TIKTOK (manual)
+# ============================================================
+# Upload TikTok sekarang otomatis jalan sebagai bagian dari pipeline utama
+# (lihat ai_pipeline.py -> _auto_publish_to_tiktok). Endpoint ini disediakan
+# sebagai jalur MANUAL untuk retry kalau auto-publish gagal (misal webhook
+# TikTok down saat itu), tanpa perlu menjalankan ulang seluruh pipeline riset.
+@app.post("/api/v1/podcast/publish-tiktok/{database_id}")
+def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
+    try:
+        from app.agents.tiktok_agent import publish_to_tiktok_webhook
+
+        db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+        if not db_item:
+            raise HTTPException(404, "Podcast tidak ditemukan.")
+        if not db_item.video_filename:
+            raise HTTPException(400, "Video belum tersedia. Render video dulu sebelum publish.")
+
+        db_item.tiktok_status = "uploading"
+        db.commit()
+
+        metadata = db_item.metadata_json or {}
+        result = publish_to_tiktok_webhook(db_item.video_filename, metadata)
+
+        if result.get("status") == "success":
+            data = result.get("data") or {}
+            tiktok_url = data.get("video_url") or data.get("url") or data.get("share_url") if isinstance(data, dict) else None
+            db_item.tiktok_status = "success"
+            db_item.tiktok_url = tiktok_url
+            db_item.tiktok_error = None
+        else:
+            db_item.tiktok_status = "failed"
+            db_item.tiktok_error = result.get("error", "Unknown error")
+
+        if db_item.agent_status is not None:
+            updated = dict(db_item.agent_status)
+            updated["tiktok"] = db_item.tiktok_status
+            db_item.agent_status = updated
+
+        db.commit()
+        db.refresh(db_item)
+
+        return {
+            "status": db_item.tiktok_status,
+            "tiktok_url": db_item.tiktok_url,
+            "error": db_item.tiktok_error,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Publish TikTok error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
