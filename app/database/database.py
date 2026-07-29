@@ -5,7 +5,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # SQLALCHEMY_DATABASE_URL = "sqlite:///./podflow.db"
 
 # Jika menggunakan MySQL (ubah sesuai username & password Anda):
-SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:@localhost:3306/podflow_db"
+SQLALCHEMY_DATABASE_URL = "postgresql://neondb_owner:npg_98SWgRubHFYX@ep-holy-brook-az38gr1q-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in SQLALCHEMY_DATABASE_URL else {}
