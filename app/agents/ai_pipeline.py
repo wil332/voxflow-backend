@@ -129,7 +129,15 @@ def _auto_publish_to_tiktok(job_id: int, keyword: str, audio_segments: list, met
         update_tiktok_status(job_id, "failed", error=str(e), progress=100)
 
 
-def run_ai_pipeline(keyword: str, job_id: int = None):
+def run_ai_pipeline(
+    keyword,
+    language="id",
+    tone="professional",
+    voice="mixed",
+    duration="5-10",
+    host_count=2,
+    job_id=None,
+):
     print(f"[PIPELINE] Memulai pipeline untuk keyword: {keyword}")
 
     # === UPDATE STATUS: Research Running ===

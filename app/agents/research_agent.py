@@ -18,7 +18,12 @@ def update_research_status(job_id: int, status: str, progress: int):
     except Exception as e:
         print(f"[RESEARCH STATUS ERROR] {e}")
 
-def run_research_agent(keyword: str, job_id: int = None) -> str:
+def run_research_agent(
+    keyword: str,
+    language: str = "id",
+    tone: str = "professional",
+    job_id: int = None
+) -> str:
     """
     Agent 1: Research Agent menggunakan Qwen API.
     job_id: untuk update progress ke database
@@ -36,18 +41,61 @@ def run_research_agent(keyword: str, job_id: int = None) -> str:
         "Content-Type": "application/json"
     }
 
-    system_prompt = (
-        "Anda adalah AI Research Assistant untuk proyek VoxFlow AI.\n"
-        "PANDUAN RISET KEYWORD & SEO HACKATHON:\n"
-        "1. Educational Focus (Informational Intent): Jika keyword berfokus pada informasi/edukasi "
-        "(seperti 'podcast AI' atau 'podcast automation'), sajikan materi edukatif yang mendalam, tren terbaru, dan konsep dasarnya.\n"
-        "2. Tutorial & Guide Focus (Transactional/Commercial Intent): Jika keyword berfokus pada cara/solusi "
-        "(seperti 'cara buat podcast otomatis dengan AI' atau 'AI podcast generator'), sajikan langkah-langkah praktis, panduan langkah demi langkah, dan perbandingannya.\n"
-        "3. Market Localization: Wajib menyesuaikan topik, konteks, dan sudut pandang riset agar sangat relevan dengan pasar dan audiens Indonesia.\n"
-        "4. Competitive Advantage: Tekankan selalu peran 'End-to-End Automation' sebagai solusi efisiensi utama.\n\n"
-        "Sajikan hasil riset secara ringkas, padat, dan terstruktur agar mudah diolah menjadi naskah podcast."
+    language_instruction = (
+        "Seluruh hasil riset WAJIB menggunakan Bahasa Indonesia."
+        if language == "id"
+        else
+        "The entire research MUST be written in English."
     )
 
+    tone_instruction = {
+        "professional": "Gunakan gaya penulisan profesional, objektif, dan berbasis fakta.",
+        "casual": "Gunakan gaya penulisan santai, mudah dipahami, dan komunikatif.",
+        "funny": "Gunakan gaya yang ringan, menarik, dan sesekali menyisipkan humor.",
+        "educational": "Gunakan gaya edukatif yang jelas dan mudah dipelajari."
+    }.get(tone, "Gunakan gaya profesional.")
+
+    system_prompt = f"""
+        Anda adalah AI Research Assistant profesional untuk platform VoxFlow AI.
+
+        Tugas Anda adalah melakukan riset yang mendalam sebagai bahan pembuatan podcast berkualitas tinggi.
+
+        {language_instruction}
+
+        {tone_instruction}
+
+        PEDOMAN RISET
+
+        1. Cari informasi yang akurat, terbaru, dan faktual.
+
+        2. Jelaskan konsep utama secara runtut.
+
+        3. Jika topik berupa tutorial, berikan langkah-langkah yang jelas.
+
+        4. Jika topik berupa tren, jelaskan:
+        - perkembangan terbaru
+        - penyebab tren
+        - dampaknya
+        - prediksi masa depan
+
+        5. Sertakan:
+        - fakta penting
+        - statistik jika tersedia
+        - contoh nyata
+        - studi kasus singkat
+        - manfaat
+        - tantangan
+        - kesalahan umum
+        - tips praktis
+
+        6. Sesuaikan sudut pandang dengan target audiens podcast.
+
+        7. Hindari informasi yang tidak dapat diverifikasi.
+
+        8. Susun menggunakan heading dan bullet point agar mudah diubah menjadi percakapan podcast.
+
+        Output HARUS berupa hasil riset terstruktur, bukan naskah podcast, bukan JSON, dan bukan dialog.
+        """
     payload = {
         "model": "qwen-max",
         "messages": [

@@ -142,7 +142,12 @@ def get_podcast_history(db: Session = Depends(get_db)):
 @app.post("/api/v1/podcast/generate")
 def trigger_podcast_generation(
     keyword: str,
-    background_tasks: BackgroundTasks,
+    language: str = "id",
+    tone: str = "professional",
+    voice: str = "mixed",
+    duration: str = "5-10",
+    host_count: int = 2,
+    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db)
 ):
     try:
@@ -214,7 +219,15 @@ def trigger_podcast_generation(
                         # otomatis di dalamnya sebelum return, jadi baris ini
                         # baru selesai setelah semua tahap itu (termasuk
                         # publish TikTok) sudah dicoba.
-                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(keyword, db_item.id)
+                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(
+    keyword=keyword,
+    language=language,
+    tone=tone,
+    voice=voice,
+    duration=duration,
+    host_count=host_count,
+    job_id=db_item.id
+)
 
                         # PENTING: refresh dulu supaya kita dapat agent_status
                         # dan tiktok_status TERBARU yang sudah di-commit oleh

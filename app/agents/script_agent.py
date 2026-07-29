@@ -3,7 +3,14 @@ import re
 import requests
 from app.config import settings
 
-def run_scriptwriter_agent(research_text: str) -> list:
+def run_scriptwriter_agent(
+    research_text: str,
+    language: str = "id",
+    tone: str = "professional",
+    voice: str = "mixed",
+    duration: str = "5-10",
+    host_count: int = 2,
+) -> list:
     """
     Agent 2: Agnes AI Scriptwriter dengan instruksi dialog mendalam.
     """
@@ -14,31 +21,118 @@ def run_scriptwriter_agent(research_text: str) -> list:
         "Content-Type": "application/json"
     }
 
-    system_prompt = (
-        "Anda adalah Scriptwriter Podcast Profesional untuk VoxFlow AI.\n"
-        "TUGAS: Ubah data riset menjadi naskah percakapan podcast antara Budi dan Richel.\n\n"
-        "KARAKTER:\n"
-        "- Budi: Antusias, suka humor lokal, pemikir kritis.\n"
-        "- Richel: Inisiatif, edukatif, dan lebih terstruktur.\n\n"
-        "ATURAN PENULISAN NASKAH:\n"
-        "1. Durasi & Segmen: Buat percakapan interaktif (MINIMAL 8 hingga 14 dialog bergantian).\n"
-        "2. SEO & Content Alignment: Bahas konsep edukasi, tutorial praktis, dan otomatisasi.\n"
-        "3. STRICT FORMAT: OUTPUT WAJIB BERUPA FORMAT JSON MURNI (Array of Objects).\n\n"
-        "Struktur JSON yang valid (Gunakan nama Budi dan Richel):\n"
-        "[\n"
-        '  {"speaker": "Budi", "emotion": "excited", "pause_duration": 0.8, "text": "..."},\n'
-        '  {"speaker": "Richel", "emotion": "curious", "pause_duration": 0.5, "text": "..."}\n'
-        "]"
+    language_instruction = (
+        "Seluruh dialog WAJIB menggunakan Bahasa Indonesia."
+        if language == "id"
+        else
+        "The entire conversation MUST be written in English."
     )
 
+    tone_instruction = {
+        "professional": "Gunakan gaya profesional, objektif, dan berbobot.",
+        "casual": "Gunakan gaya santai seperti percakapan sehari-hari.",
+        "funny": "Gunakan gaya ringan dengan humor seperlunya.",
+        "educational": "Gunakan gaya edukatif yang jelas dan mudah dipahami."
+    }.get(tone, "Gunakan gaya profesional.")
+
+    voice_presets = {
+        "mixed": ("Budi", "Richel"),
+        "male": ("Budi", "Andi"),
+        "female": ("Richel", "Alya")
+    }
+
+    host1, host2 = voice_presets.get(voice, ("Budi", "Richel"))
+
+    duration_instruction = {
+        "1-3": "6-8 dialog.",
+        "5-10": "12-18 dialog.",
+        "10-15": "20-28 dialog.",
+        "15-20": "30-40 dialog."
+    }.get(duration, "12-18 dialog.")
+
+    host_instruction = (
+        f"Gunakan SATU pembicara saja yaitu {host1}."
+        if host_count == 1
+        else f"Gunakan dua pembicara yaitu {host1} dan {host2}."
+    )
+
+    system_prompt = f"""
+        Anda adalah Scriptwriter Podcast Profesional untuk VoxFlow AI.
+
+        TUGAS
+        Ubah hasil riset menjadi naskah podcast yang terdengar alami, menarik, dan informatif.
+
+        {language_instruction}
+
+        {tone_instruction}
+
+        {host_instruction}
+
+        DURASI
+        {duration_instruction}
+
+        ATURAN
+
+        1. Percakapan harus terdengar natural seperti podcast sungguhan.
+
+        2. Jangan membaca hasil riset secara verbatim.
+
+        3. Tambahkan transisi antar topik.
+
+        4. Gunakan pertanyaan dan tanggapan yang natural.
+
+        5. Berikan contoh nyata bila memungkinkan.
+
+        6. Hindari pengulangan kalimat.
+
+        7. Tutup podcast dengan kesimpulan singkat.
+
+        OUTPUT
+
+        WAJIB berupa JSON VALID.
+
+        Contoh:
+
+        [
+        {{
+            "speaker":"{host1}",
+            "emotion":"excited",
+            "pause_duration":0.6,
+            "text":"..."
+        }},
+        {{
+            "speaker":"{host2}",
+            "emotion":"curious",
+            "pause_duration":0.5,
+            "text":"..."
+        }}
+        ]
+
+        Jangan menambahkan markdown.
+        Jangan menggunakan ```json.
+        Jangan menambahkan penjelasan.
+        Output HARUS hanya berupa JSON Array.
+    """
     payload = {
         "model": "agnes-2.0-flash",
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Data Riset:\n{research_text}"}
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": f"""
+        Berikut hasil riset:
+
+        {research_text}
+
+        Buat naskah podcast sesuai seluruh instruksi di atas.
+        """
+            }
         ],
         "temperature": 0.7
-    }
+}
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=90)
