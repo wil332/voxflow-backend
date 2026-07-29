@@ -1,23 +1,42 @@
 import os
 from openai import OpenAI
 
-# Inisialisasi OpenAI client (menggunakan OPENAI_API_KEY dari env Vercel)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Pakai OPENAI_API_KEY (Official OpenAI) jika ada Whisper API,
+# atau fallback ke OPENROUTER_API_KEY
+api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+
+# Kosongkan base_url jika memanggil Whisper ke OpenAI resmi
+client = OpenAI(api_key=api_key)
 
 def generate_ass_subtitles(audio_path: str, output_ass_path: str):
     """
     Mengubah MP3 menjadi file subtitle .ass menggunakan OpenAI Whisper API Cloud
     """
-    # Mengirim file audio ke API OpenAI (tidak mengunduh model di server Vercel)
-    with open(audio_path, "rb") as audio_file:
-        response = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="id",
-            response_format="verbose_json"
-        )
+    segments = []
 
-    # Header format .ass dengan styling warna TikTok (#2563EB & #06B6D4)
+    try:
+        with open(audio_path, "rb") as audio_file:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="id",
+                response_format="verbose_json"
+            )
+
+        # Ambil segments dari response secara aman
+        if hasattr(response, 'segments') and response.segments:
+            segments = response.segments
+        elif isinstance(response, dict) and response.get('segments'):
+            segments = response.get('segments')
+        else:
+            print("[SUBTITLE WARNING] Whisper tidak mengembalikan data segments.")
+            segments = []
+
+    except Exception as err:
+        print(f"[SUBTITLE ERROR] Gagal transkripsi audio: {err}")
+        segments = []
+
+    # Header format .ass dengan styling warna TikTok
     ass_header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -31,20 +50,16 @@ Style: TikTok,Arial,55,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,1
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    # 'response' dari API berbentuk dictionary/object yang berisi list segments
-    segments = response.segments if hasattr(response, 'segments') else response.get('segments', [])
-
     with open(output_ass_path, "w", encoding="utf-8") as f:
         f.write(ass_header)
         for segment in segments:
-            # Mengakses nilai dari attribute object atau dictionary API
-            start_time = segment.start if hasattr(segment, 'start') else segment["start"]
-            end_time = segment.end if hasattr(segment, 'end') else segment["end"]
-            text_content = segment.text if hasattr(segment, 'text') else segment["text"]
+            start_time = segment.start if hasattr(segment, 'start') else segment.get("start", 0)
+            end_time = segment.end if hasattr(segment, 'end') else segment.get("end", 0)
+            text_content = segment.text if hasattr(segment, 'text') else segment.get("text", "")
 
             start = format_timestamp(start_time)
             end = format_timestamp(end_time)
-            text = text_content.strip().replace("'", "")
+            text = str(text_content).strip().replace("'", "")
             f.write(f"Dialogue: 0,{start},{end},TikTok,,0,0,0,,{text}\n")
 
 def format_timestamp(seconds: float) -> str:
