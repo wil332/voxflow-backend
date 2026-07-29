@@ -16,4 +16,3 @@ elevenlabs>=0.2.27
 static-ffmpeg
 openai
 python-multipart
-audioop-lts
