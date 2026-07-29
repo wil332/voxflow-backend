@@ -15,8 +15,10 @@ from app.utils.video_generator import create_tiktok_video_with_subtitles
 from app.agents.tiktok_agent import publish_to_tiktok_webhook
 from pydantic import BaseModel
 from app.database import engine, Base
+import static_ffmpeg
 
 # Membuat tabel otomatis saat aplikasi berjalan
+static_ffmpeg.add_paths()
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
