@@ -359,3 +359,46 @@ def publish_tiktok_retry(database_id: int, db: Session = Depends(get_db)):
         db_item.tiktok_error = result.get("error", "Unknown error")
         db.commit()
         raise HTTPException(500, f"Gagal publish: {db_item.tiktok_error}")
+
+@app.delete("/api/v1/podcast/cleanup")
+def cleanup_all_episodes(db: Session = Depends(get_db)):
+    """
+    Menghapus SEMUA episode dari database dan file audio/video.
+    HATI-HATI! Ini irreversible.
+    """
+    import shutil
+
+    try:
+        # 1. Hapus semua data dari database
+        deleted = db.query(PodcastHistory).delete()
+        db.commit()
+
+        # 2. Hapus semua file audio
+        audio_dir = settings.OUTPUT_AUDIO_DIR
+        if os.path.exists(audio_dir):
+            for file in os.listdir(audio_dir):
+                file_path = os.path.join(audio_dir, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
+        # 3. Hapus semua file video
+        video_dir = settings.OUTPUT_VIDEO_DIR
+        if os.path.exists(video_dir):
+            for file in os.listdir(video_dir):
+                file_path = os.path.join(video_dir, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
+        # 4. Reset auto increment
+        from sqlalchemy import text
+        db.execute(text("ALTER TABLE podcast_history AUTO_INCREMENT = 1"))
+        db.commit()
+
+        return {
+            "status": "success",
+            "message": f"Deleted {deleted} episodes and all audio/video files"
+        }
+
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}")
+        raise HTTPException(500, f"Error: {str(e)}")
