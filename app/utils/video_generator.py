@@ -47,6 +47,46 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
 
     ensure_background_exists(background_image)
 
+    ass_path = os.path.join(output_dir, f"temp_{audio_filename.replace('.mp3', '')}.ass")
+    try:
+        generate_ass_subtitles(audio_path, ass_path)
+        if os.path.exists(ass_path) and os.path.getsize(ass_path) > 100:
+            print(f"[VIDEO] ✅ Subtitle generated: {ass_path} ({os.path.getsize(ass_path)} bytes)")
+        else:
+            print(f"[VIDEO] ⚠️ Subtitle file empty or not created. Skipping subtitle.")
+            ass_path = None  # skip subtitle
+    except Exception as e:
+        print(f"[VIDEO] ❌ Subtitle generation failed: {e}")
+        ass_path = None  # skip subtitle jika gagal
+
+    # 3. FFmpeg command (dengan atau tanpa subtitle)
+    if ass_path and os.path.exists(ass_path):
+        clean_ass_path = ass_path.replace("\\", "/").replace(":", "\\:")
+        filter_complex = (
+            "[1:a]showwaves=s=800x150:mode=line:colors=#2563EB[wave];"
+            "[0:v][wave]overlay=(W-w)/2:1200[v_wave];"
+            f"[v_wave]subtitles='{clean_ass_path}'[v_out]"
+        )
+    else:
+        # Tanpa subtitle (hanya waveform + background)
+        filter_complex = (
+            "[1:a]showwaves=s=800x150:mode=line:colors=#2563EB[wave];"
+            "[0:v][wave]overlay=(W-w)/2:1200[v_out]"
+        )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", background_image,
+        "-i", audio_path,
+        "-filter_complex", filter_complex,
+        "-map", "[v_out]",
+        "-map", "1:a",
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-shortest",
+        output_video_path
+    ]
+
     # -----------------------------
     # Validasi audio
     # -----------------------------

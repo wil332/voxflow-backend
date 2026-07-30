@@ -41,9 +41,7 @@ class PodcastHistory(Base):
     merged_audio_filename = Column(String(255), nullable=True)
     video_filename = Column(String(255), nullable=True)
 
-    tiktok_status = Column(String(50), nullable=True)      # "success", "error", atau None (belum diupload)
-    tiktok_url = Column(String(500), nullable=True)         # link video TikTok kalau berhasil
-    tiktok_error = Column(Text, nullable=True)               # pesan error kalau gagal upload
+                 # pesan error kalau gagal upload
 
 
     # === Status publish TikTok ===
