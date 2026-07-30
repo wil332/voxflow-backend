@@ -16,4 +16,5 @@ gTTS>=2.5.0
 elevenlabs>=0.2.27
 static-ffmpeg
 openai>=1.30.0
-backoff>=2.2.1                  # ← Untuk retry API jika gagal
+backoff>=2.2.1
+static-ffmpeg                # ← Untuk retry API jika gagal
