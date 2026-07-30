@@ -109,6 +109,25 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         f"[v_wave]subtitles='{clean_ass_path}'[v_out]"
     )
 
+    # ============================================================
+    # CATATAN PERBAIKAN -- kenapa render sebelumnya kena exit code -9:
+    # ============================================================
+    # Exit code -9 = proses menerima SIGKILL, hampir selalu berarti
+    # OOM killer container yang membunuh proses karena kehabisan memori.
+    # Di log sebelumnya, libx264 mendeteksi "threads=60" secara otomatis
+    # (auto-detect dari jumlah core yang terlihat container, yang di
+    # environment seperti Railway sering tidak merefleksikan RAM yang
+    # SEBENARNYA dialokasikan). Makin banyak thread encoding paralel,
+    # makin besar buffer memori yang dialokasikan libx264 -- gampang
+    # sekali menabrak limit RAM container dan langsung di-kill.
+    #
+    # Fix: batasi "-threads" secara eksplisit (bukan auto-detect), dan
+    # pakai preset yang lebih ringan memori ("veryfast" -- x264 preset
+    # yang lebih berat seperti "medium"/"slow" butuh buffer lookahead
+    # lebih besar). CRF dinaikkan sedikit (kualitas visual TikTok tidak
+    # butuh bitrate setinggi film) supaya beban encoding lebih ringan.
+    FFMPEG_THREADS = str(getattr(settings, "FFMPEG_THREADS", 2))
+
     cmd = [
 
         ffmpeg_bin,
@@ -136,6 +155,15 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         "-c:v",
         "libx264",
 
+        "-threads",
+        FFMPEG_THREADS,
+
+        "-preset",
+        "veryfast",
+
+        "-crf",
+        "26",
+
         "-c:a",
         "aac",
 
@@ -155,13 +183,18 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
 
         print("\n[VIDEO ENGINE] Rendering video...\n")
 
+        # Timeout ditambahkan supaya kalau proses macet (bukan OOM, tapi
+        # misal filter graph nyangkut), job tidak menggantung tanpa batas
+        # dan memblokir worker lain selamanya.
         result = subprocess.run(
 
             cmd,
 
             capture_output=True,
 
-            text=True
+            text=True,
+
+            timeout=600,  # 10 menit -- sesuaikan kalau durasi podcast biasanya lebih panjang
 
         )
 
@@ -177,6 +210,9 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         if result.returncode != 0:
 
             print("[VIDEO ENGINE ERROR] FFmpeg gagal.")
+            if result.returncode < 0:
+                print(f"[VIDEO ENGINE ERROR] Proses dibunuh oleh sinyal {-result.returncode} "
+                      f"(sinyal 9 = SIGKILL, biasanya OOM killer container kehabisan memori).")
 
             if os.path.exists(ass_path):
                 os.remove(ass_path)
@@ -210,6 +246,12 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         print("====================================\n")
 
         return video_filename
+
+    except subprocess.TimeoutExpired:
+        print("[VIDEO ENGINE ERROR] FFmpeg timeout -- proses dihentikan paksa setelah 600 detik.")
+        if os.path.exists(ass_path):
+            os.remove(ass_path)
+        return ""
 
     except Exception as e:
 

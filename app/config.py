@@ -17,6 +17,13 @@ class Settings:
     TIKTOK_WEBHOOK_URL: str = os.getenv("TIKTOK_WEBHOOK_URL", "").strip()
     BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000").strip()
 
+    # Batas jumlah thread FFmpeg saat render video (lihat video_generator.py).
+    # Default 2 -- aman untuk container kecil (mencegah OOM kill akibat
+    # auto-detect thread berlebihan). Kalau container di-upgrade ke tier
+    # dengan lebih banyak RAM/CPU, naikkan nilai ini lewat environment
+    # variable FFMPEG_THREADS, tidak perlu redeploy kode.
+    FFMPEG_THREADS: int = int(os.getenv("FFMPEG_THREADS", "2"))
+
     STORAGE_DIR: str = os.getenv("STORAGE_DIR", ".")
 
     @property
@@ -31,9 +38,5 @@ class Settings:
     def ASSETS_DIR(self) -> str:
         return os.path.join(self.STORAGE_DIR, "assets")
 
-    # === HAPUS DUPLIKAT DI BAWAH INI ===
-    # def get_debug_info(self):  # <-- HAPUS BAGIAN INI
-    #     return { ... }
 
-# === PASTIKAN settings = Settings() HANYA SATU ===
 settings = Settings()
