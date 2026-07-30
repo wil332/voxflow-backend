@@ -2,10 +2,9 @@
 
 import os
 import re
-import subprocess
 from pydub import AudioSegment
-from pydub.effects import normalize
 from app.config import settings
+
 
 def merge_podcast_segments(
     segment_filenames: list,
@@ -14,6 +13,24 @@ def merge_podcast_segments(
 ) -> str:
     """
     Menggabungkan seluruh segmen audio menjadi 1 file MP3 utuh.
+
+    CATATAN PERBAIKAN:
+    Versi sebelumnya memakai FFmpeg `-f concat` (concat demuxer) sebagai
+    metode utama. Concat demuxer TIDAK mendekode lalu menggabungkan audio --
+    dia cuma menyambung paket-paket mentah dari tiap file MP3 secara
+    berurutan, baru di-encode ulang sekali di akhir. Ini menghasilkan
+    klik/glitch/suara patah tepat di titik sambungan kalau file sumbernya
+    pakai bitrate variabel (VBR) -- yang memang lazim untuk output TTS
+    seperti ElevenLabs -- karena batas antar-frame audio tidak selalu
+    sejajar persis di titik sambungan.
+
+    Solusi: decode PENUH tiap segmen ke PCM lewat pydub, gabungkan di level
+    PCM (bukan bitstream MP3 mentah), baru encode ulang sekali di akhir.
+    Ini menghilangkan masalah penyambungan bitstream sepenuhnya.
+
+    Sekaligus memakai field `pause_duration` asli per segmen (dari
+    script_agent.py) untuk jeda antar dialog, bukan jeda seragam 300ms,
+    supaya ritme bicara terasa lebih natural.
     """
     output_dir = settings.OUTPUT_AUDIO_DIR
     os.makedirs(output_dir, exist_ok=True)
@@ -21,23 +38,29 @@ def merge_podcast_segments(
 
     TARGET_SAMPLE_RATE = 44100
     TARGET_CHANNELS = 2
+    DEFAULT_GAP_MS = 350
+    MIN_GAP_MS = 150
+    MAX_GAP_MS = 1200
 
     def extract_segment_number(item):
         str_item = str(item)
         match = re.search(r'segment_(\d+)', str_item)
         return int(match.group(1)) if match else 9999
 
-    # ============================================================
-    # KUMPULKAN FILE SEGMEN YANG VALID
-    # ============================================================
-    valid_segments = []
     sorted_segments = sorted(segment_filenames, key=extract_segment_number)
+
+    # ============================================================
+    # KUMPULKAN FILE SEGMEN YANG VALID (+ pause_duration masing-masing)
+    # ============================================================
+    valid_segments = []  # list of (file_path, pause_duration_seconds)
 
     for item in sorted_segments:
         if isinstance(item, dict):
             raw_path = item.get("file_path") or item.get("filename") or item.get("path") or ""
+            pause_duration = item.get("pause_duration", 0.3)
         else:
             raw_path = str(item)
+            pause_duration = 0.3
 
         base_name = os.path.basename(str(raw_path).strip())
         if not base_name or base_name == "output_audio":
@@ -45,7 +68,7 @@ def merge_podcast_segments(
 
         file_path = os.path.join(output_dir, base_name)
         if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
-            valid_segments.append(file_path)
+            valid_segments.append((file_path, pause_duration))
             print(f"[MERGER] ✅ Found: {base_name}")
         else:
             print(f"[MERGER] ⚠️ Missing: {file_path}")
@@ -55,76 +78,42 @@ def merge_podcast_segments(
         return ""
 
     # ============================================================
-    # OPSI 1: Merge dengan FFmpeg (LEBIH STABIL)
+    # DECODE + CONCAT PENUH LEWAT PYDUB
     # ============================================================
     try:
-        print("[MERGER] Using FFmpeg for merging...")
+        combined = AudioSegment.empty()
 
-        # Buat file list untuk FFmpeg
-        list_path = output_path.replace(".mp3", "_list.txt")
-        with open(list_path, "w") as f:
-            for seg in valid_segments:
-                f.write(f"file '{seg}'\n")
+        for file_path, pause_duration in valid_segments:
+            try:
+                audio = AudioSegment.from_file(file_path, format="mp3")
+                audio = audio.set_frame_rate(TARGET_SAMPLE_RATE)
+                audio = audio.set_channels(TARGET_CHANNELS)
+                combined += audio
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", list_path,
-            "-c:a", "libmp3lame",
-            "-b:a", "192k",
-            "-ar", "44100",
-            "-ac", "2",
-            output_path
-        ]
+                gap_ms = int((pause_duration or 0.3) * 1000)
+                gap_ms = max(MIN_GAP_MS, min(gap_ms, MAX_GAP_MS))
+                combined += AudioSegment.silent(duration=gap_ms, frame_rate=TARGET_SAMPLE_RATE)
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+                print(f"[MERGER] ✅ Added: {os.path.basename(file_path)} (gap {gap_ms}ms)")
+            except Exception as e:
+                print(f"[MERGER] ❌ Failed to decode: {os.path.basename(file_path)} - {e}")
 
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            print(f"[MERGER] ✅ FFmpeg merge success: {output_path}")
-            os.remove(list_path)
+        if len(combined) > 500:
+            combined.export(output_path, format="mp3", bitrate="192k")
+            print(f"[MERGER] ✅ Merge success (pydub decode+concat, no bitstream splice glitch): {output_path}")
 
             if cleanup_segments:
-                for seg in valid_segments:
+                for file_path, _ in valid_segments:
                     try:
-                        os.remove(seg)
-                    except:
+                        os.remove(file_path)
+                    except Exception:
                         pass
 
             return output_filename
         else:
-            print(f"[MERGER] ❌ FFmpeg failed: {result.stderr}")
-            os.remove(list_path)
+            print("[MERGER] ❌ Merge failed - combined audio too short (kemungkinan semua segmen gagal didekode)")
+            return ""
 
     except Exception as e:
-        print(f"[MERGER] ❌ FFmpeg error: {e}")
-
-    # ============================================================
-    # OPSI 2: Fallback ke pydub (Jika FFmpeg gagal)
-    # ============================================================
-    print("[MERGER] Falling back to pydub...")
-
-    try:
-        combined = AudioSegment.empty()
-        for seg_path in valid_segments:
-            try:
-                audio = AudioSegment.from_file(seg_path, format="mp3")
-                audio = audio.set_frame_rate(TARGET_SAMPLE_RATE)
-                audio = audio.set_channels(TARGET_CHANNELS)
-                combined += audio
-                combined += AudioSegment.silent(duration=300, frame_rate=TARGET_SAMPLE_RATE)
-                print(f"[MERGER] ✅ Added: {os.path.basename(seg_path)}")
-            except Exception as e:
-                print(f"[MERGER] ❌ Failed: {os.path.basename(seg_path)} - {e}")
-
-        if len(combined) > 500:
-            combined.export(output_path, format="mp3", bitrate="192k")
-            print(f"[MERGER] ✅ pydub merge success: {output_path}")
-            return output_filename
-        else:
-            print("[MERGER] ❌ pydub merge failed - audio too short")
-
-    except Exception as e:
-        print(f"[MERGER] ❌ pydub error: {e}")
-
-    return ""
+        print(f"[MERGER] ❌ pydub merge error: {e}")
+        return ""
