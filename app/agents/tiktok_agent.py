@@ -1,16 +1,13 @@
 # app/agents/tiktok_agent.py
 """
-Upload otomatis ke TikTok pakai cookie session, menggantikan webhook eksternal.
-
-SETUP YANG DIBUTUHKAN:
-1. Install library: pip install tiktok-uploader
-2. Install browser driver Chrome/Chromium (tiktok-uploader butuh Selenium)
-3. Export cookie login TikTok kamu ke file "tiktok_cookies.txt" format Netscape,
-   pakai extension browser seperti "Get cookies.txt LOCALLY"
-4. Taruh file cookie itu di root project, atau set path-nya lewat env var TIKTOK_COOKIES_PATH
+Upload otomatis ke TikTok pakai cookie session.
+Cookie dibaca dari environment variable TIKTOK_COOKIES_CONTENT (bukan file
+fisik), supaya aman di-deploy ke Railway tanpa perlu commit file sensitif
+ke Git.
 """
 
 import os
+import tempfile
 from app.config import settings
 
 try:
@@ -19,11 +16,26 @@ except ImportError:
     upload_video = None
 
 
+def _get_cookies_file_path() -> str:
+    """
+    Kalau ada env var TIKTOK_COOKIES_CONTENT, tulis isinya ke file sementara
+    di server (Railway punya /tmp yang writable), lalu balikin path-nya.
+    Kalau tidak ada, fallback ke file fisik biasa (buat development lokal).
+    """
+    cookies_content = os.getenv("TIKTOK_COOKIES_CONTENT")
+
+    if cookies_content:
+        # Tulis ke file sementara di /tmp (writable di Railway)
+        temp_path = os.path.join(tempfile.gettempdir(), "tiktok_cookies.txt")
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(cookies_content)
+        return temp_path
+
+    # Fallback: file fisik lokal (buat development di laptop)
+    return getattr(settings, "TIKTOK_COOKIES_PATH", "tiktok_cookies.txt")
+
+
 def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
-    """
-    Nama fungsi dipertahankan sama (publish_to_tiktok_webhook) supaya main.py
-    tidak perlu diubah — tapi sekarang isinya upload via cookie, bukan webhook.
-    """
     if upload_video is None:
         return {
             "status": "error",
@@ -34,9 +46,13 @@ def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
     if not os.path.exists(video_path):
         return {"status": "error", "error": f"File video tidak ditemukan: {video_path}"}
 
-    cookies_path = getattr(settings, "TIKTOK_COOKIES_PATH", "tiktok_cookies.txt")
+    cookies_path = _get_cookies_file_path()
     if not os.path.exists(cookies_path):
-        return {"status": "error", "error": f"File cookie TikTok tidak ditemukan di: {cookies_path}"}
+        return {
+            "status": "error",
+            "error": f"File cookie TikTok tidak ditemukan di: {cookies_path}. "
+                     f"Pastikan environment variable TIKTOK_COOKIES_CONTENT sudah diset di Railway."
+        }
 
     hashtags = " ".join([f"#{tag.replace(' ', '')}" for tag in metadata.get("tags", [])])
     caption = f"{metadata.get('title', '')}\n\n{metadata.get('description', '')}\n\n{hashtags}"
@@ -48,7 +64,7 @@ def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
             filename=video_path,
             description=caption,
             cookies=cookies_path,
-            headless=True,  # jalan tanpa buka jendela browser (cocok buat server)
+            headless=True,
         )
 
         print("[TIKTOK AGENT SUCCESS] Video berhasil di-upload otomatis via cookie!")
