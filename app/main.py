@@ -395,6 +395,7 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
     try:
         from app.utils.video_generator import create_tiktok_video_with_subtitles
         from app.utils.audio_merger import merge_podcast_segments
+        from app.agents.tiktok_agent import publish_to_tiktok_webhook
 
         db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
         if not db_item:
@@ -423,17 +424,38 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(db_item)
 
+        # ============================================================
+        # BARU: Otomatis lanjut upload ke TikTok, tanpa klik manual terpisah
+        # ============================================================
+        tiktok_metadata = metadata.get("tiktok", metadata)  # fallback kalau metadata belum multi-platform
+        tiktok_result = publish_to_tiktok_webhook(video_filename, tiktok_metadata)
+
+        db_item.tiktok_status = tiktok_result.get("status")
+        if tiktok_result.get("status") == "success":
+            db_item.tiktok_url = tiktok_result.get("data", {}).get("url") or None
+        else:
+            db_item.tiktok_error = tiktok_result.get("error")
+        db.commit()
+        db.refresh(db_item)
+
         return {
             "status": "completed",
             "database_id": db_item.id,
             "video_filename": video_filename,
-            "video_stream_url": f"/api/v1/podcast/video/{video_filename}"
+            "video_stream_url": f"/api/v1/podcast/video/{video_filename}",
+            "tiktok_upload": tiktok_result,
+            "message": (
+                "Video berhasil dibuat DAN otomatis diupload ke TikTok!"
+                if tiktok_result.get("status") == "success"
+                else "Video berhasil dibuat, tapi upload TikTok gagal (cek field tiktok_upload)."
+            )
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Generate video error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
+
 
 # ============================================================
 # PUBLISH / RETRY PUBLISH KE TIKTOK (manual)

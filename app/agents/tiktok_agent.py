@@ -1,53 +1,63 @@
 # app/agents/tiktok_agent.py
-import requests
+"""
+Upload otomatis ke TikTok pakai cookie session, menggantikan webhook eksternal.
+
+SETUP YANG DIBUTUHKAN:
+1. Install library: pip install tiktok-uploader
+2. Install browser driver Chrome/Chromium (tiktok-uploader butuh Selenium)
+3. Export cookie login TikTok kamu ke file "tiktok_cookies.txt" format Netscape,
+   pakai extension browser seperti "Get cookies.txt LOCALLY"
+4. Taruh file cookie itu di root project, atau set path-nya lewat env var TIKTOK_COOKIES_PATH
+"""
+
+import os
 from app.config import settings
 
+try:
+    from tiktok_uploader.upload import upload_video
+except ImportError:
+    upload_video = None
+
+
 def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
-    webhook_url = getattr(settings, "TIKTOK_WEBHOOK_URL", "")
-
-    # 🔗 URL video publik yang bisa diakses (Sesuaikan domain jika sudah dipublish)
-    # Jika masih di local/dev, gunakan IP/Host lokal kamu
-    base_url = getattr(settings, "BASE_URL", "http://localhost:8000")
-    video_url = f"{base_url}/api/v1/podcast/video/{video_filename}"
-
-    # Format Hashtags
-    hashtags = " ".join([f"#{tag.replace(' ', '')}" for tag in metadata.get("tags", [])])
-    caption = f"🎙️ {metadata.get('title', '')}\n\n{metadata.get('description', '')}\n\n{hashtags}"
-
-    # Payload asli yang dikirim ke TikTok Webhook
-    payload = {
-        "video_url": video_url,
-        "title": metadata.get("title", ""),
-        "caption": caption,
-        "aspect_ratio": "9:16",
-        "cta": metadata.get("cta", "Jangan lupa follow!")
-    }
-
-    # 🚀 UBAH MODE TEST MENJADI LIVE POST REQUEST
-    if not webhook_url or "maxy-api.com" in webhook_url:
-        print("[TIKTOK AGENT] Memulai pengiriman LIVE ke Webhook...")
-
-    try:
-        # Kirim data ke Webhook TikTok MAXY
-        response = requests.post(webhook_url, json=payload, timeout=30)
-
-        if response.status_code in [200, 201]:
-            print("[TIKTOK AGENT SUCCESS] Berhasil terkirim ke Webhook MAXY!")
-            return {
-                "status": "success",
-                "message": "Video berhasil dipublikasikan ke TikTok!",
-                "data": response.json() if response.content else payload
-            }
-        else:
-            print(f"[TIKTOK AGENT ERROR] Webhook menolak request: {response.status_code}")
-            return {
-                "status": "error",
-                "error": f"HTTP {response.status_code}: {response.text}"
-            }
-
-    except Exception as e:
-        print(f"[TIKTOK AGENT EXCEPTION] Gagal koneksi ke Webhook: {e}")
+    """
+    Nama fungsi dipertahankan sama (publish_to_tiktok_webhook) supaya main.py
+    tidak perlu diubah — tapi sekarang isinya upload via cookie, bukan webhook.
+    """
+    if upload_video is None:
         return {
             "status": "error",
-            "error": str(e)
+            "error": "Library 'tiktok-uploader' belum terinstall. Jalankan: pip install tiktok-uploader"
         }
+
+    video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
+    if not os.path.exists(video_path):
+        return {"status": "error", "error": f"File video tidak ditemukan: {video_path}"}
+
+    cookies_path = getattr(settings, "TIKTOK_COOKIES_PATH", "tiktok_cookies.txt")
+    if not os.path.exists(cookies_path):
+        return {"status": "error", "error": f"File cookie TikTok tidak ditemukan di: {cookies_path}"}
+
+    hashtags = " ".join([f"#{tag.replace(' ', '')}" for tag in metadata.get("tags", [])])
+    caption = f"{metadata.get('title', '')}\n\n{metadata.get('description', '')}\n\n{hashtags}"
+
+    try:
+        print(f"[TIKTOK AGENT] Mulai upload otomatis via cookie: {video_filename}")
+
+        upload_video(
+            filename=video_path,
+            description=caption,
+            cookies=cookies_path,
+            headless=True,  # jalan tanpa buka jendela browser (cocok buat server)
+        )
+
+        print("[TIKTOK AGENT SUCCESS] Video berhasil di-upload otomatis via cookie!")
+        return {
+            "status": "success",
+            "message": "Video berhasil diupload otomatis ke TikTok via cookie session!",
+            "data": {"video_filename": video_filename, "caption": caption}
+        }
+
+    except Exception as e:
+        print(f"[TIKTOK AGENT ERROR] Gagal upload via cookie: {e}")
+        return {"status": "error", "error": str(e)}

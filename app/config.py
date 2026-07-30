@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 # Memuat file .env dari root direktori proyek
 load_dotenv()
 
+TIKTOK_COOKIES_PATH: str = os.getenv("TIKTOK_COOKIES_PATH", "tiktok_cookies.txt")
+
 class Settings:
     PROJECT_NAME: str = "VoxFlow Ai"
     VERSION: str = "1.0.0"

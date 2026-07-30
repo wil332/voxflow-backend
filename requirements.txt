@@ -17,4 +17,5 @@ elevenlabs>=0.2.27
 static-ffmpeg
 openai>=1.30.0
 backoff>=2.2.1
-static-ffmpeg                # ← Untuk retry API jika gagal
+static-ffmpeg
+tiktok-uploader  # ← Untuk retry API jika gagal
