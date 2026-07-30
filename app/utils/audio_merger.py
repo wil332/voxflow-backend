@@ -3,23 +3,17 @@
 import os
 import re
 from pydub import AudioSegment
+from pydub.effects import normalize
 from app.config import settings
-
-# Tidak di-hardcode ke path Windows lagi.
-# `static_ffmpeg.add_paths()` sudah dipanggil saat server start (lihat main.py)
-# sehingga ffmpeg & ffprobe otomatis tersedia di PATH sistem, lintas OS (Windows/Linux/Mac).
 
 def merge_podcast_segments(
     segment_filenames: list,
     output_filename: str = "full_podcast.mp3",
-    cleanup_segments: bool = False  # <-- TAMBAHKAN PARAMETER INI
+    cleanup_segments: bool = False
 ) -> str:
     """
     Menggabungkan seluruh segmen audio menjadi 1 file MP3 utuh.
-
-    cleanup_segments: kalau True, file segmen mentah akan dihapus setelah digabung.
-    Default False, supaya segmen mentah tetap tersedia untuk fitur lain
-    (misal frontend yang fetch & gabung audio sendiri).
+    DENGAN NORMALISASI VOLUME + SAMPLE RATE UNIFORM.
     """
     output_dir = settings.OUTPUT_AUDIO_DIR
     os.makedirs(output_dir, exist_ok=True)
@@ -27,9 +21,14 @@ def merge_podcast_segments(
 
     combined_audio = AudioSegment.empty()
     loaded_count = 0
-    processed_files = []  # Menyimpan daftar path file segmen yang berhasil dibaca
+    processed_files = []
 
-    # Fungsi pengurutan segmen berdasarkan angka
+    # ============================================================
+    # TARGET: SAMPLE RATE UNIFORM (44100 Hz, Stereo)
+    # ============================================================
+    TARGET_SAMPLE_RATE = 44100
+    TARGET_CHANNELS = 2  # Stereo
+
     def extract_segment_number(item):
         str_item = str(item)
         match = re.search(r'segment_(\d+)', str_item)
@@ -38,7 +37,6 @@ def merge_podcast_segments(
     sorted_segments = sorted(segment_filenames, key=extract_segment_number)
     print(f"\n[MERGER] Ditemukan {len(sorted_segments)} segmen. Memulai penggabungan...")
 
-    # 1. Proses Penempelan Audio
     for item in sorted_segments:
         if isinstance(item, dict):
             raw_path = item.get("file_path") or item.get("filename") or item.get("path") or ""
@@ -54,37 +52,71 @@ def merge_podcast_segments(
 
         if os.path.exists(file_path):
             try:
+                # ============================================================
+                # 1. LOAD AUDIO DENGAN FORMAT YANG BENAR
+                # ============================================================
                 segment = AudioSegment.from_file(file_path, format="mp3")
-                combined_audio += segment
-                combined_audio += AudioSegment.silent(duration=400)  # Jeda 0.4 detik
+
+                # ============================================================
+                # 2. UNIFORM SAMPLE RATE & CHANNELS
+                # ============================================================
+                if segment.frame_rate != TARGET_SAMPLE_RATE:
+                    segment = segment.set_frame_rate(TARGET_SAMPLE_RATE)
+                    print(f"[MERGER] 🔄 Resample {base_name} → {TARGET_SAMPLE_RATE}Hz")
+
+                if segment.channels != TARGET_CHANNELS:
+                    segment = segment.set_channels(TARGET_CHANNELS)
+                    print(f"[MERGER] 🔄 Convert {base_name} → Stereo")
+
+                # ============================================================
+                # 3. NORMALISASI VOLUME (SUPAYA TIDAK PECAH)
+                # ============================================================
+                # Normalisasi ke -3dB (agar tidak clipping)
+                normalized_segment = normalize(segment, headroom=3.0)
+
+                # ============================================================
+                # 4. GABUNG DENGAN JEDA 0.3 DETIK
+                # ============================================================
+                combined_audio += normalized_segment
+                combined_audio += AudioSegment.silent(duration=300, frame_rate=TARGET_SAMPLE_RATE)
                 loaded_count += 1
                 processed_files.append(file_path)
-                print(f"[MERGER SUCCESS] Berhasil menempel: {base_name}")
-            except Exception as e:
-                print(f"[MERGER ERROR] Gagal membaca file {base_name}: {e}")
-        else:
-            print(f"[MERGER WARNING] File tidak ditemukan di: {file_path}")
+                print(f"[MERGER] ✅ {base_name} (volume normalized)")
 
-    # 2. Ekspor File Audio Gabungan Utama
+            except Exception as e:
+                print(f"[MERGER] ❌ Gagal membaca {base_name}: {e}")
+        else:
+            print(f"[MERGER] ⚠️ File tidak ditemukan: {file_path}")
+
+    # ============================================================
+    # 5. EKSPOR DENGAN BITRATE TINGGI
+    # ============================================================
     if loaded_count > 0:
         try:
-            combined_audio.export(output_path, format="mp3", bitrate="192k")
-            print(f"\n[MERGER SUKSES] Total {loaded_count} segmen berhasil digabung ke: {output_path}")
+            # Normalisasi final (keseluruhan audio)
+            final_audio = normalize(combined_audio, headroom=2.0)
 
-            # 3. PEMBERSIHAN SEGMEN SEMENTARA (CLEANUP) - opsional
+            final_audio.export(
+                output_path,
+                format="mp3",
+                bitrate="256k",  # <-- Bitrate tinggi untuk kualitas baik
+                parameters=["-ac", "2", "-ar", "44100"]  # Stereo, 44.1kHz
+            )
+            print(f"\n[MERGER] ✅ {loaded_count} segmen digabung ke: {output_path}")
+            print(f"[MERGER] 📊 Sample Rate: {TARGET_SAMPLE_RATE}Hz, Bitrate: 256kbps")
+
             if cleanup_segments:
-                print("[CLEANUP] Menghapus file segmen sementara...")
+                print("[MERGER] 🧹 Menghapus file segmen...")
                 for temp_file in processed_files:
                     try:
                         if os.path.exists(temp_file) and temp_file != output_path:
                             os.remove(temp_file)
-                    except Exception as cleanup_err:
-                        print(f"[CLEANUP WARNING] Gagal menghapus {temp_file}: {cleanup_err}")
-                print("[CLEANUP SUKSES] File segmen sementara telah dihapus!\n")
+                    except Exception as e:
+                        print(f"[MERGER] ⚠️ Gagal hapus {temp_file}: {e}")
 
         except Exception as e:
-            print(f"\n[MERGER CRITICAL ERROR] Gagal mengekspor MP3: {e}\n")
+            print(f"\n[MERGER] ❌ Gagal ekspor MP3: {e}")
     else:
-        print("\n[MERGER ERROR] Tidak ada segmen audio yang berhasil digabung!\n")
+        print("\n[MERGER] ❌ Tidak ada segmen yang digabung!")
 
     return output_filename
