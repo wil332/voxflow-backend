@@ -3,8 +3,8 @@ from app.config import settings
 
 
 client = None
-if settings.OPENAI_API_KEY:
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+if settings.OPENROUTER_API_KEY:
+    client = OpenAI(api_key=settings.OPENROUTER_API_KEY)
 else:
     print("[SUBTITLE WARNING] OPENAI_API_KEY belum di-set. Subtitle akan di-skip (video tetap dibuat tanpa subtitle).")
 
