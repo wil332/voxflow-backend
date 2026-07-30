@@ -1,40 +1,47 @@
-import os
 from openai import OpenAI
+from app.config import settings
 
-# Pakai OPENAI_API_KEY (Official OpenAI) jika ada Whisper API,
-# atau fallback ke OPENROUTER_API_KEY
-api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 
-# Kosongkan base_url jika memanggil Whisper ke OpenAI resmi
-client = OpenAI(api_key=api_key)
+client = None
+if settings.OPENAI_API_KEY:
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+else:
+    print("[SUBTITLE WARNING] OPENAI_API_KEY belum di-set. Subtitle akan di-skip (video tetap dibuat tanpa subtitle).")
+
 
 def generate_ass_subtitles(audio_path: str, output_ass_path: str):
     """
-    Mengubah MP3 menjadi file subtitle .ass menggunakan OpenAI Whisper API Cloud
+    Mengubah MP3 menjadi file subtitle .ass menggunakan OpenAI Whisper API Cloud.
+
+    Kalau OPENAI_API_KEY tidak tersedia atau transkripsi gagal, tetap menulis
+    file .ass minimal (cuma header, tanpa dialog) supaya proses render video
+    di video_generator.py tidak ikut gagal gara-gara file subtitle tidak ada.
     """
     segments = []
 
-    try:
-        with open(audio_path, "rb") as audio_file:
-            response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="id",
-                response_format="verbose_json"
-            )
+    if client is None:
+        print("[SUBTITLE] Skip transkripsi -- OPENAI_API_KEY tidak tersedia.")
+    else:
+        try:
+            with open(audio_path, "rb") as audio_file:
+                response = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="id",
+                    response_format="verbose_json"
+                )
 
-        # Ambil segments dari response secara aman
-        if hasattr(response, 'segments') and response.segments:
-            segments = response.segments
-        elif isinstance(response, dict) and response.get('segments'):
-            segments = response.get('segments')
-        else:
-            print("[SUBTITLE WARNING] Whisper tidak mengembalikan data segments.")
+            if hasattr(response, 'segments') and response.segments:
+                segments = response.segments
+            elif isinstance(response, dict) and response.get('segments'):
+                segments = response.get('segments')
+            else:
+                print("[SUBTITLE WARNING] Whisper tidak mengembalikan data segments.")
+                segments = []
+
+        except Exception as err:
+            print(f"[SUBTITLE ERROR] Gagal transkripsi audio: {err}")
             segments = []
-
-    except Exception as err:
-        print(f"[SUBTITLE ERROR] Gagal transkripsi audio: {err}")
-        segments = []
 
     # Header format .ass dengan styling warna TikTok
     ass_header = """[Script Info]
@@ -61,6 +68,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             end = format_timestamp(end_time)
             text = str(text_content).strip().replace("'", "")
             f.write(f"Dialogue: 0,{start},{end},TikTok,,0,0,0,,{text}\n")
+
 
 def format_timestamp(seconds: float) -> str:
     hrs = int(seconds // 3600)

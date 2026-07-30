@@ -381,6 +381,8 @@ def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
             "merged_audio_filename": merged_audio_filename,
             "download_url": f"/api/v1/podcast/download/{merged_audio_filename}"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Merge audio error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
@@ -427,6 +429,8 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
             "video_filename": video_filename,
             "video_stream_url": f"/api/v1/podcast/video/{video_filename}"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Generate video error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
