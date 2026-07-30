@@ -118,7 +118,7 @@ def debug_info():
 def get_podcast_history(db: Session = Depends(get_db)):
     try:
         logger.info("Fetching podcast history")
-        history = db.query(PodcastHistory).all()
+        history = db.query(PodcastHistory).order_by(PodcastHistory.id.asc()).all()
         return {
             "status": "success",
             "total": len(history),
