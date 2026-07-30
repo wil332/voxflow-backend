@@ -7,45 +7,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import static_ffmpeg
+from datetime import datetime
+
 from app.config import settings
+from app.agents.ai_pipeline import run_ai_pipeline
+from app.middlewares.error_handler import setup_exception_handlers
 from app.database.database import engine, Base, get_db
 from app.database.models import PodcastHistory
-from app.middlewares.error_handler import setup_exception_handlers
+from app.agents.tiktok_agent import publish_to_tiktok_webhook
+from app.utils.audio_merger import merge_podcast_segments
+from app.utils.video_generator import create_tiktok_video_with_subtitles
 
 # ============================================================
-# SETUP LOGGING
+# SETUP
 # ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# SETUP FFMPEG
-# ============================================================
-try:
-    static_ffmpeg.add_paths()
-    logger.info("FFmpeg paths added successfully")
-except Exception as e:
-    logger.error(f"FFmpeg setup error: {e}")
+static_ffmpeg.add_paths()
+Base.metadata.create_all(bind=engine)
 
-# ============================================================
-# DATABASE INITIALIZATION
-# ============================================================
-try:
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-        logger.info("Database connection successful")
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created/verified")
-except Exception as e:
-    logger.error(f"Database initialization error: {e}")
-
-# ============================================================
-# FASTAPI APP
-# ============================================================
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API server untuk otomatisasi platform podcast otonom.",
@@ -53,23 +34,14 @@ app = FastAPI(
 )
 
 # ============================================================
-# CORS MIDDLEWARE
+# CORS
 # ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://localhost:3000",
-        "https://*.railway.app",
-        "https://*.vercel.app",
-        "*"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 setup_exception_handlers(app)
@@ -79,101 +51,34 @@ setup_exception_handlers(app)
 # ============================================================
 @app.get("/")
 def read_root():
-    return {
-        "status": "success",
-        "message": "PodFlow AI Backend is running and ready!",
-        "cors": "enabled",
-        "database": "connected"
-    }
+    return {"status": "success", "message": "PodFlow AI Backend is running and ready!"}
 
 # ============================================================
-# DEBUG ENDPOINT
-# ============================================================
-@app.get("/api/v1/debug")
-def debug_info():
-    try:
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-            db_status = "connected"
-    except Exception as e:
-        db_status = f"error: {str(e)}"
-
-    return {
-        "status": "ok",
-        "database": db_status,
-        "storage_dir": settings.STORAGE_DIR,
-        "api_keys": {
-            "qwen": "set" if settings.QWEN_API_KEY else "MISSING",
-            "agnes": "set" if settings.AGNES_API_KEY else "MISSING",
-            "elevenlabs": "set" if settings.ELEVENLABS_API_KEY else "MISSING",
-            "groq": "set" if settings.GROQ_API_KEY else "MISSING",
-        }
-    }
-
-# ============================================================
-# HISTORY ENDPOINT
-# ============================================================
-@app.get("/api/v1/podcast/history")
-def get_podcast_history(db: Session = Depends(get_db)):
-    try:
-        logger.info("Fetching podcast history")
-        history = db.query(PodcastHistory).all()
-        return {
-            "status": "success",
-            "total": len(history),
-            "data": history
-        }
-    except Exception as e:
-        logger.error(f"History error: {e}")
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "error",
-                "total": 0,
-                "data": [],
-                "message": str(e)
-            }
-        )
-
-# ============================================================
-# GENERATE ENDPOINT
+# GENERATE PODCAST (ASYNC + PARAMETER LENGKAP)
 # ============================================================
 @app.post("/api/v1/podcast/generate")
 def trigger_podcast_generation(
     keyword: str,
-    language: str = "id",
+    language: str = "indonesian",
     tone: str = "professional",
     voice: str = "mixed",
     duration: str = "5-10",
-    host_count: int = 2,
-    background_tasks: BackgroundTasks = None,
+    platforms: list[str] = [],
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     try:
-        logger.info(f"Generate request for keyword: {keyword}")
+        logger.info(f"Generate: keyword={keyword}, language={language}, tone={tone}, voice={voice}")
 
-        # Cek API keys
+        # === CEK API KEYS ===
         if not settings.QWEN_API_KEY:
-            return JSONResponse(
-                status_code=500,
-                content={"status": "error", "message": "QWEN_API_KEY not configured"}
-            )
+            return JSONResponse(500, {"status": "error", "message": "QWEN_API_KEY not configured"})
         if not settings.AGNES_API_KEY:
-            return JSONResponse(
-                status_code=500,
-                content={"status": "error", "message": "AGNES_API_KEY not configured"}
-            )
+            return JSONResponse(500, {"status": "error", "message": "AGNES_API_KEY not configured"})
         if not settings.ELEVENLABS_API_KEY:
-            return JSONResponse(
-                status_code=500,
-                content={"status": "error", "message": "ELEVENLABS_API_KEY not configured"}
-            )
+            return JSONResponse(500, {"status": "error", "message": "ELEVENLABS_API_KEY not configured"})
 
-        # Buat entri database
-        # CATATAN: key "tiktok" ditambahkan di sini supaya konsisten dengan
-        # yang dipakai ai_pipeline.py untuk melacak status upload TikTok
-        # secara terpisah dari "metadata" (SEO metadata generation).
+        # === BUAT DATABASE ENTRY ===
         db_item = PodcastHistory(
             keyword=keyword,
             status="processing",
@@ -184,7 +89,12 @@ def trigger_podcast_generation(
                 "audio": "pending",
                 "metadata": "pending",
                 "tiktok": "pending"
-            }
+            },
+            language=language,
+            tone=tone,
+            voice=voice,
+            duration=duration,
+            platforms=platforms
         )
         db.add(db_item)
         db.commit()
@@ -192,73 +102,74 @@ def trigger_podcast_generation(
 
         logger.info(f"Created job {db_item.id} for keyword: {keyword}")
 
+        # ============================================================
+        # BACKGROUND TASK
+        # ============================================================
         def run_pipeline():
             try:
                 from app.database.database import SessionLocal
-                from app.agents.ai_pipeline import run_ai_pipeline
-
                 bg_db = SessionLocal()
                 try:
                     item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-                    if item:
-                        item.status = "processing"
-                        item.progress = 5
-                        item.agent_status = {
-                            "research": "pending",
-                            "script": "pending",
-                            "audio": "pending",
-                            "metadata": "pending",
-                            "tiktok": "pending"
-                        }
-                        bg_db.commit()
-                        print(f"[MAIN] Job {db_item.id} initialized")
+                    if not item:
+                        return
 
-                        # Jalankan pipeline dengan job_id.
-                        # CATATAN: run_ai_pipeline sekarang JUGA menjalankan
-                        # merge audio -> render video -> upload TikTok secara
-                        # otomatis di dalamnya sebelum return, jadi baris ini
-                        # baru selesai setelah semua tahap itu (termasuk
-                        # publish TikTok) sudah dicoba.
-                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(
-    keyword=keyword,
-    language=language,
-    tone=tone,
-    voice=voice,
-    duration=duration,
-    host_count=host_count,
-    job_id=db_item.id
-)
+                    item.status = "processing"
+                    item.progress = 5
+                    item.agent_status = {
+                        "research": "running",
+                        "script": "pending",
+                        "audio": "pending",
+                        "metadata": "pending",
+                        "tiktok": "pending"
+                    }
+                    bg_db.commit()
 
-                        # PENTING: refresh dulu supaya kita dapat agent_status
-                        # dan tiktok_status TERBARU yang sudah di-commit oleh
-                        # sesi database lain di dalam run_ai_pipeline (termasuk
-                        # hasil auto-publish TikTok). Tanpa refresh, "item" di
-                        # sini masih memegang data lama dari sebelum pipeline jalan.
-                        bg_db.refresh(item)
+                    # === JALANKAN PIPELINE DENGAN PARAMETER ===
+                    research_data, script_json, metadata, audio_segments = run_ai_pipeline(
+                        keyword=keyword,
+                        job_id=db_item.id,
+                        language=language,
+                        tone=tone,
+                        voice=voice,
+                        duration=duration,
+                        platforms=platforms
+                    )
 
-                        item.research_summary = str(research_data)
-                        item.metadata_json = metadata
-                        item.audio_segments = audio_segments
-                        item.status = "completed"
-                        item.progress = 100
+                    # === UPDATE HASIL ===
+                    item.research_summary = str(research_data)
+                    item.metadata_json = metadata
+                    item.audio_segments = audio_segments
+                    item.status = "completed"
+                    item.progress = 100
+                    item.agent_status = {
+                        "research": "done",
+                        "script": "done",
+                        "audio": "done",
+                        "metadata": "done",
+                        "tiktok": "pending"
+                    }
+                    bg_db.commit()
+                    logger.info(f"Pipeline completed for job {db_item.id}")
 
-                        # Merge, JANGAN overwrite penuh -- supaya key "tiktok"
-                        # yang sudah di-set oleh auto-publish tidak hilang
-                        # tertimpa dict baru yang tidak punya key itu.
-                        merged_agent_status = dict(item.agent_status or {})
-                        merged_agent_status.update({
-                            "research": "done",
-                            "script": "done",
-                            "audio": "done",
-                            "metadata": "done",
-                        })
-                        item.agent_status = merged_agent_status
-
-                        bg_db.commit()
-                        logger.info(f"Pipeline completed for job {db_item.id}")
+                    # === AUTO-UPLOAD TIKTOK (jika video sudah ada) ===
+                    if item.video_filename:
+                        try:
+                            result = publish_to_tiktok_webhook(item.video_filename, metadata)
+                            if result.get("status") in ["success", "test_success"]:
+                                item.tiktok_status = "success"
+                                item.tiktok_url = result.get("data", {}).get("url") or "Uploaded"
+                            else:
+                                item.tiktok_status = "failed"
+                                item.tiktok_error = result.get("error", "Unknown error")
+                            bg_db.commit()
+                        except Exception as e:
+                            item.tiktok_status = "failed"
+                            item.tiktok_error = str(e)
+                            bg_db.commit()
 
                 except Exception as e:
-                    logger.error(f"Pipeline error: {e}", exc_info=True)
+                    logger.error(f"Pipeline error: {e}")
                     if bg_db:
                         item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
                         if item:
@@ -268,7 +179,7 @@ def trigger_podcast_generation(
                 finally:
                     bg_db.close()
             except Exception as e:
-                logger.error(f"Background task error: {e}", exc_info=True)
+                logger.error(f"Background task error: {e}")
 
         background_tasks.add_task(run_pipeline)
 
@@ -277,366 +188,174 @@ def trigger_podcast_generation(
             "status": "processing",
             "message": "Pipeline started"
         }
+
     except Exception as e:
-        logger.error(f"Generate error: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": str(e),
-                "detail": "Internal server error"
-            }
-        )
+        logger.error(f"Generate error: {e}")
+        return JSONResponse(500, {"status": "error", "message": str(e)})
 
 # ============================================================
 # STATUS ENDPOINT
 # ============================================================
 @app.get("/api/v1/podcast/status/{job_id}")
 def get_job_status(job_id: int, db: Session = Depends(get_db)):
-    try:
-        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
-        if not item:
-            return JSONResponse(
-                status_code=404,
-                content={"status": "not_found", "message": "Job tidak ditemukan"}
-            )
+    item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+    if not item:
+        return JSONResponse(404, {"status": "not_found", "message": "Job tidak ditemukan"})
 
-        response = {
-            "id": item.id,
-            "keyword": item.keyword,
-            "status": item.status,
-            "progress": item.progress,
-            "agent_status": item.agent_status,
-            "error_message": item.error_message,
-            # Status publish TikTok dikirim selalu (bukan hanya saat completed)
-            # supaya frontend bisa menampilkan progres "uploading..." secara
-            # real-time lewat polling, sama seperti agent lain.
-            "tiktok_status": item.tiktok_status,
-            "tiktok_url": item.tiktok_url,
-            "tiktok_error": item.tiktok_error,
-        }
+    response = {
+        "id": item.id,
+        "keyword": item.keyword,
+        "status": item.status,
+        "progress": item.progress,
+        "agent_status": item.agent_status,
+        "error_message": item.error_message,
+        "tiktok_status": getattr(item, "tiktok_status", None),
+        "tiktok_url": getattr(item, "tiktok_url", None),
+        "tiktok_error": getattr(item, "tiktok_error", None),
+    }
 
-        if item.status == "completed":
-            if item.merged_audio_filename:
-                response["audio_url"] = f"/api/v1/podcast/download/{item.merged_audio_filename}"
-            if item.video_filename:
-                response["video_url"] = f"/api/v1/podcast/video/{item.video_filename}"
-            if item.metadata_json:
-                response["metadata"] = item.metadata_json
+    if item.status == "completed":
+        if item.merged_audio_filename:
+            response["audio_url"] = f"/api/v1/podcast/download/{item.merged_audio_filename}"
+        if item.video_filename:
+            response["video_url"] = f"/api/v1/podcast/video/{item.video_filename}"
+        if item.metadata_json:
+            response["metadata"] = item.metadata_json
 
-        return response
-    except Exception as e:
-        logger.error(f"Status error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
-        )
+    return response
 
 # ============================================================
-# DOWNLOAD & STREAM
+# HISTORY
 # ============================================================
-# app/main.py - bagian download dan video
-
-@app.get("/api/v1/podcast/download/{filename}")
-def download_audio_file(filename: str):
-    try:
-        # Pastikan direktori ada
-        os.makedirs(settings.OUTPUT_AUDIO_DIR, exist_ok=True)
-
-        logger.info(f"OUTPUT_AUDIO_DIR = {settings.OUTPUT_AUDIO_DIR}")
-        logger.info(f"Filename request = {filename}")
-
-        file_path = os.path.join(settings.OUTPUT_AUDIO_DIR, filename)
-
-        logger.info(f"Full path = {file_path}")
-        logger.info(f"Exists = {os.path.exists(file_path)}")
-        if not os.path.exists(file_path):
-            raise HTTPException(404, f"File '{filename}' tidak ditemukan.")
-        return FileResponse(path=file_path, media_type="audio/mpeg", filename=filename)
-    except Exception as e:
-        logger.error(f"Download error: {e}")
-        raise HTTPException(500, f"Error: {str(e)}")
-
-@app.get("/api/v1/podcast/video/{video_filename}")
-def get_video_stream(video_filename: str):
-    try:
-        os.makedirs(settings.OUTPUT_VIDEO_DIR, exist_ok=True)
-
-        logger.info(f"OUTPUT_VIDEO_DIR = {settings.OUTPUT_VIDEO_DIR}")
-        logger.info(f"Video request = {video_filename}")
-
-        video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
-
-        logger.info(f"Video path = {video_path}")
-        logger.info(f"Exists = {os.path.exists(video_path)}")
-        if not os.path.exists(video_path):
-            raise HTTPException(404, "File video tidak ditemukan")
-        return FileResponse(video_path, media_type="video/mp4")
-    except Exception as e:
-        logger.error(f"Video stream error: {e}")
-        raise HTTPException(500, f"Error: {str(e)}")
+@app.get("/api/v1/podcast/history")
+def get_podcast_history(db: Session = Depends(get_db)):
+    history = db.query(PodcastHistory).all()
+    return {"status": "success", "total": len(history), "data": history}
 
 # ============================================================
-# MERGE AUDIO (manual / retry)
+# MERGE AUDIO
 # ============================================================
-
 @app.post("/api/v1/podcast/merge-audio/{database_id}")
 def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
-    try:
-        from app.utils.audio_merger import merge_podcast_segments
-        from app.utils.video_generator import create_tiktok_video_with_subtitles
+    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+    if not db_item:
+        raise HTTPException(404, "Podcast tidak ditemukan.")
+    if not db_item.audio_segments:
+        raise HTTPException(400, "Belum ada segmen audio.")
 
-        db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
-        if not db_item:
-            raise HTTPException(404, "Podcast tidak ditemukan.")
-        if not db_item.audio_segments:
-            raise HTTPException(400, "Belum ada segmen audio.")
-        if db_item.status != "completed":
-            raise HTTPException(400, "Podcast belum selesai diproses.")
+    clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
+    clean_keyword = clean_keyword.replace(' ', '_')[:50]
+    merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
 
-        # ============================================================
-        # MERGE AUDIO
-        # ============================================================
+    merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
+
+    db_item.merged_audio_filename = merged_audio_filename
+    db.commit()
+    db.refresh(db_item)
+
+    return {
+        "status": "completed",
+        "database_id": db_item.id,
+        "merged_audio_filename": merged_audio_filename,
+        "download_url": f"/api/v1/podcast/download/{merged_audio_filename}"
+    }
+
+# ============================================================
+# GENERATE VIDEO
+# ============================================================
+@app.post("/api/v1/podcast/generate-video/{database_id}")
+def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
+    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+    if not db_item:
+        raise HTTPException(404, "Podcast tidak ditemukan.")
+    if not db_item.audio_segments:
+        raise HTTPException(400, "Belum ada segmen audio.")
+
+    # Merge audio dulu jika belum
+    if not db_item.merged_audio_filename:
         clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
         clean_keyword = clean_keyword.replace(' ', '_')[:50]
         merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
-
-        merged_audio_filename = merge_podcast_segments(
-            db_item.audio_segments,
-            merged_filename,
-            cleanup_segments=False
-        )
+        merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
         db_item.merged_audio_filename = merged_audio_filename
         db.commit()
         db.refresh(db_item)
 
-        # ============================================================
-        # 🚀 AUTO-RENDER VIDEO SETELAH MERGE AUDIO
-        # ============================================================
-        video_filename = None
-        try:
-            print(f"[VIDEO] 🎬 Auto-rendering video for episode {database_id}")
-            metadata = db_item.metadata_json or {}
-            video_filename = create_tiktok_video_with_subtitles(merged_audio_filename, metadata)
+    metadata = db_item.metadata_json or {}
+    video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
 
-            if video_filename:
-                db_item.video_filename = video_filename
-                db.commit()
-                db.refresh(db_item)
-                print(f"[VIDEO] ✅ Video rendered: {video_filename}")
-            else:
-                print(f"[VIDEO] ❌ Video render failed")
-        except Exception as e:
-            print(f"[VIDEO] ❌ Video render error: {e}")
-            # Jangan gagalkan merge audio jika video gagal
+    if not video_filename:
+        raise HTTPException(500, "Gagal merender video.")
 
-        return {
-            "status": "completed",
-            "database_id": db_item.id,
-            "merged_audio_filename": merged_audio_filename,
-            "video_filename": video_filename,
-            "download_url": f"/api/v1/podcast/download/{merged_audio_filename}",
-            "video_url": f"/api/v1/podcast/video/{video_filename}" if video_filename else None
-        }
-    except Exception as e:
-        logger.error(f"Merge audio error: {e}")
-        raise HTTPException(500, f"Error: {str(e)}")
-# ============================================================
-# GENERATE VIDEO (manual / retry)
-# ============================================================
-# app/main.py - bagian generate-video
+    db_item.video_filename = video_filename
+    db_item.tiktok_status = "uploading"
+    db.commit()
+    db.refresh(db_item)
 
-@app.post("/api/v1/podcast/generate-video/{database_id}")
-def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
+    # === AUTO-UPLOAD TIKTOK ===
     try:
-        from app.utils.video_generator import create_tiktok_video_with_subtitles
-        from app.utils.audio_merger import merge_podcast_segments
-        from app.agents.tiktok_agent import publish_to_tiktok_webhook
-        from datetime import datetime
-
-        db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
-        if not db_item:
-            raise HTTPException(404, "Podcast tidak ditemukan.")
-        if not db_item.audio_segments:
-            raise HTTPException(400, "Belum ada segmen audio.")
-        if db_item.status != "completed":
-            raise HTTPException(400, "Podcast belum selesai diproses.")
-
-        # === RENDER VIDEO ===
-        if not db_item.merged_audio_filename:
-            clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
-            clean_keyword = clean_keyword.replace(' ', '_')[:50]
-            merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
-
-            # === PANGGIL DENGAN cleanup_segments=False ===
-            merged_audio_filename = merge_podcast_segments(
-                db_item.audio_segments,
-                merged_filename,
-                cleanup_segments=False  # <-- PASTIKAN PARAMETER INI ADA
-            )
-            db_item.merged_audio_filename = merged_audio_filename
-            db.commit()
-            db.refresh(db_item)
-
-        # === CEK APAKAH FILE AUDIO BERHASIL ===
-        audio_path = os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename)
-        if not os.path.exists(audio_path):
-            raise HTTPException(500, f"File audio tidak ditemukan: {audio_path}")
-
-        metadata = db_item.metadata_json or {}
-        video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
-
-        if not video_filename:
-            raise HTTPException(500, "Gagal merender video.")
-
-        db_item.video_filename = video_filename
-        db_item.tiktok_status = "uploading"
-        db.commit()
-        db.refresh(db_item)
-
-        # ============================================================
-        # 🚀 AUTO-UPLOAD KE TIKTOK
-        # ============================================================
-        try:
-            print(f"[TIKTOK] 🚀 Auto-uploading video: {video_filename}")
-            result = publish_to_tiktok_webhook(video_filename, metadata)
-
-            if result.get("status") in ["success", "test_success"]:
-                db_item.tiktok_status = "success"
-                db_item.tiktok_url = result.get("data", {}).get("url") or "Uploaded successfully"
-                db_item.tiktok_uploaded_at = datetime.utcnow()
-                print(f"[TIKTOK] ✅ Upload success!")
-            else:
-                db_item.tiktok_status = "failed"
-                db_item.tiktok_error = result.get("error", "Unknown error")
-                print(f"[TIKTOK] ❌ Upload failed: {db_item.tiktok_error}")
-        except Exception as e:
-            db_item.tiktok_status = "failed"
-            db_item.tiktok_error = str(e)
-            print(f"[TIKTOK] ❌ Upload error: {e}")
-
-        db.commit()
-        db.refresh(db_item)
-
-        return {
-            "status": "completed",
-            "database_id": db_item.id,
-            "video_filename": video_filename,
-            "video_stream_url": f"/api/v1/podcast/video/{video_filename}",
-            "tiktok_status": db_item.tiktok_status,
-            "tiktok_url": db_item.tiktok_url,
-            "tiktok_error": db_item.tiktok_error,
-        }
-    except Exception as e:
-        logger.error(f"Generate video error: {e}")
-        raise HTTPException(500, f"Error: {str(e)}")
-
-
-
-# RSS Feed
-@app.get("/api/v1/podcast/rss")
-def generate_rss_feed(db: Session = Depends(get_db)):
-    """
-    Generate RSS feed untuk distribusi ke Spotify/Apple Podcasts.
-    """
-    from fastapi.responses import Response
-    from datetime import datetime
-
-    episodes = db.query(PodcastHistory).filter(
-        PodcastHistory.status == "completed"
-    ).order_by(PodcastHistory.created_at.desc()).all()
-
-    base_url = settings.BASE_URL
-
-    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
-  <channel>
-    <title>VoxFlow AI Podcast</title>
-    <description>Podcast otomatis tentang AI, teknologi, dan inovasi untuk audiens Indonesia.</description>
-    <link>{base_url}</link>
-    <language>id</language>
-    <itunes:author>VoxFlow AI</itunes:author>
-    <itunes:category text="Technology"/>
-    <itunes:explicit>no</itunes:explicit>
-'''
-
-    for ep in episodes:
-        title = ep.metadata_json.get("title", ep.keyword) if ep.metadata_json else ep.keyword
-        desc = ep.metadata_json.get("description", "") if ep.metadata_json else ""
-
-        audio_url = f"{base_url}/api/v1/podcast/download/{ep.merged_audio_filename}" if ep.merged_audio_filename else ""
-        pub_date = ep.created_at.strftime('%a, %d %b %Y %H:%M:%S GMT') if ep.created_at else datetime.now().strftime('%a, %d %b %Y %H:%M:%S GMT')
-
-        xml += f'''
-    <item>
-      <title>{title}</title>
-      <description>{desc}</description>
-      <enclosure url="{audio_url}" type="audio/mpeg" length="0"/>
-      <guid>episode-{ep.id}</guid>
-      <pubDate>{pub_date}</pubDate>
-      <itunes:duration>8:30</itunes:duration>
-    </item>
-'''
-
-    xml += '''
-  </channel>
-</rss>
-'''
-
-    return Response(
-        content=xml,
-        media_type="application/rss+xml",
-        headers={"Content-Disposition": "inline; filename=feed.xml"}
-    )
-# ============================================================
-# PUBLISH / RETRY PUBLISH KE TIKTOK (manual)
-# ============================================================
-# Upload TikTok sekarang otomatis jalan sebagai bagian dari pipeline utama
-# (lihat ai_pipeline.py -> _auto_publish_to_tiktok). Endpoint ini disediakan
-# sebagai jalur MANUAL untuk retry kalau auto-publish gagal (misal webhook
-# TikTok down saat itu), tanpa perlu menjalankan ulang seluruh pipeline riset.
-@app.post("/api/v1/podcast/publish-tiktok/{database_id}")
-def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
-    try:
-        from app.agents.tiktok_agent import publish_to_tiktok_webhook
-
-        db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
-        if not db_item:
-            raise HTTPException(404, "Podcast tidak ditemukan.")
-        if not db_item.video_filename:
-            raise HTTPException(400, "Video belum tersedia. Render video dulu sebelum publish.")
-
-        db_item.tiktok_status = "uploading"
-        db.commit()
-
-        metadata = db_item.metadata_json or {}
-        result = publish_to_tiktok_webhook(db_item.video_filename, metadata)
-
-        if result.get("status") == "success":
-            data = result.get("data") or {}
-            tiktok_url = data.get("video_url") or data.get("url") or data.get("share_url") if isinstance(data, dict) else None
+        result = publish_to_tiktok_webhook(video_filename, metadata)
+        if result.get("status") in ["success", "test_success"]:
             db_item.tiktok_status = "success"
-            db_item.tiktok_url = tiktok_url
-            db_item.tiktok_error = None
+            db_item.tiktok_url = result.get("data", {}).get("url") or "Uploaded"
+            db_item.tiktok_uploaded_at = datetime.utcnow()
         else:
             db_item.tiktok_status = "failed"
             db_item.tiktok_error = result.get("error", "Unknown error")
-
-        if db_item.agent_status is not None:
-            updated = dict(db_item.agent_status)
-            updated["tiktok"] = db_item.tiktok_status
-            db_item.agent_status = updated
-
         db.commit()
-        db.refresh(db_item)
-
-        return {
-            "status": db_item.tiktok_status,
-            "tiktok_url": db_item.tiktok_url,
-            "error": db_item.tiktok_error,
-        }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Publish TikTok error: {e}")
-        raise HTTPException(500, f"Error: {str(e)}")
+        db_item.tiktok_status = "failed"
+        db_item.tiktok_error = str(e)
+        db.commit()
+
+    return {
+        "status": "completed",
+        "database_id": db_item.id,
+        "video_filename": video_filename,
+        "video_stream_url": f"/api/v1/podcast/video/{video_filename}",
+        "tiktok_status": db_item.tiktok_status,
+        "tiktok_url": db_item.tiktok_url
+    }
+
+# ============================================================
+# DOWNLOAD & STREAM
+# ============================================================
+@app.get("/api/v1/podcast/download/{filename}")
+def download_audio_file(filename: str):
+    file_path = os.path.join(settings.OUTPUT_AUDIO_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(404, f"File '{filename}' tidak ditemukan.")
+    return FileResponse(path=file_path, media_type="audio/mpeg", filename=filename)
+
+@app.get("/api/v1/podcast/video/{video_filename}")
+def get_video_stream(video_filename: str):
+    video_path = os.path.join(settings.OUTPUT_VIDEO_DIR, video_filename)
+    if not os.path.exists(video_path):
+        raise HTTPException(404, "File video tidak ditemukan")
+    return FileResponse(video_path, media_type="video/mp4")
+
+# ============================================================
+# PUBLISH TIKTOK (RETRY)
+# ============================================================
+@app.post("/api/v1/podcast/publish-tiktok/{database_id}")
+def publish_tiktok_retry(database_id: int, db: Session = Depends(get_db)):
+    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+    if not db_item:
+        raise HTTPException(404, "Podcast tidak ditemukan.")
+    if not db_item.video_filename:
+        raise HTTPException(400, "Belum ada video untuk dipublish.")
+
+    metadata = db_item.metadata_json or {}
+    result = publish_to_tiktok_webhook(db_item.video_filename, metadata)
+
+    if result.get("status") in ["success", "test_success"]:
+        db_item.tiktok_status = "success"
+        db_item.tiktok_url = result.get("data", {}).get("url") or "Uploaded"
+        db_item.tiktok_uploaded_at = datetime.utcnow()
+        db.commit()
+        return {"status": "success", "tiktok_url": db_item.tiktok_url}
+    else:
+        db_item.tiktok_status = "failed"
+        db_item.tiktok_error = result.get("error", "Unknown error")
+        db.commit()
+        raise HTTPException(500, f"Gagal publish: {db_item.tiktok_error}")

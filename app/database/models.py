@@ -17,6 +17,10 @@ def default_agent_status():
     }
 
 
+def default_platforms():
+    return ["spotify"]
+
+
 class PodcastHistory(Base):
     __tablename__ = "podcast_history"
 
@@ -41,5 +45,15 @@ class PodcastHistory(Base):
     tiktok_status = Column(String(50), default="pending")  # pending | uploading | success | failed
     tiktok_url = Column(String(500), nullable=True)
     tiktok_error = Column(Text, nullable=True)
+    tiktok_uploaded_at = Column(DateTime, nullable=True)
+
+    # ============================================================
+    # KOLOM PARAMETER DARI FRONTEND
+    # ============================================================
+    language = Column(String(50), default="indonesian")
+    tone = Column(String(50), default="professional")
+    voice = Column(String(50), default="mixed")
+    duration = Column(String(20), default="5-10")
+    platforms = Column(JSON, default=default_platforms)
 
     created_at = Column(DateTime, default=datetime.utcnow)
