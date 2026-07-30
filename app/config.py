@@ -12,6 +12,7 @@ class Settings:
     AGNES_API_KEY: str = os.getenv("AGNES_API_KEY", "").strip()
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "").strip()
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip() # <-- Ditambahkan di sini
 
     # Webhook TikTok
     TIKTOK_WEBHOOK_URL: str = os.getenv("TIKTOK_WEBHOOK_URL", "").strip()

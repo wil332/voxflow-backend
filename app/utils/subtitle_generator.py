@@ -4,28 +4,32 @@ from app.config import settings
 
 client = None
 if settings.OPENROUTER_API_KEY:
-    client = OpenAI(api_key=settings.OPENROUTER_API_KEY)
+    # Mengarahkan klien OpenAI SDK ke endpoint OpenRouter
+    client = OpenAI(
+        api_key=settings.OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1"
+    )
 else:
-    print("[SUBTITLE WARNING] OPENAI_API_KEY belum di-set. Subtitle akan di-skip (video tetap dibuat tanpa subtitle).")
+    print("[SUBTITLE WARNING] OPENROUTER_API_KEY belum di-set. Subtitle akan di-skip (video tetap dibuat tanpa subtitle).")
 
 
 def generate_ass_subtitles(audio_path: str, output_ass_path: str):
     """
-    Mengubah MP3 menjadi file subtitle .ass menggunakan OpenAI Whisper API Cloud.
+    Mengubah MP3 menjadi file subtitle .ass menggunakan Whisper via OpenRouter API.
 
-    Kalau OPENAI_API_KEY tidak tersedia atau transkripsi gagal, tetap menulis
+    Kalau OPENROUTER_API_KEY tidak tersedia atau transkripsi gagal, tetap menulis
     file .ass minimal (cuma header, tanpa dialog) supaya proses render video
     di video_generator.py tidak ikut gagal gara-gara file subtitle tidak ada.
     """
     segments = []
 
     if client is None:
-        print("[SUBTITLE] Skip transkripsi -- OPENAI_API_KEY tidak tersedia.")
+        print("[SUBTITLE] Skip transkripsi -- OPENROUTER_API_KEY tidak tersedia.")
     else:
         try:
             with open(audio_path, "rb") as audio_file:
                 response = client.audio.transcriptions.create(
-                    model="whisper-1",
+                    model="openai/whisper-1", # Format model openrouter untuk whisper
                     file=audio_file,
                     language="id",
                     response_format="verbose_json"
