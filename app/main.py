@@ -58,14 +58,14 @@ def read_root():
 # ============================================================
 @app.post("/api/v1/podcast/generate")
 def trigger_podcast_generation(
-    keyword: str,
-    language: str = "indonesian",
-    tone: str = "professional",
-    voice: str = "mixed",
-    duration: str = "5-10",
-    platforms: list[str] = [],
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    keyword: str,                           # ←
+    background_tasks: BackgroundTasks,      # ←
+    db: Session = Depends(get_db),          # ←
+    language: str = "indonesian",           # ←
+    tone: str = "professional",             # ←
+    voice: str = "mixed",                   # ←
+    duration: str = "5-10",                 # ←
+    platforms: list[str] = []               # ←
 ):
     try:
         logger.info(f"Generate: keyword={keyword}, language={language}, tone={tone}, voice={voice}")
