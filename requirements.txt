@@ -8,7 +8,7 @@ redis==5.0.1
 pydantic==2.6.4
 sqlalchemy>=2.0.0
 pymysql>=1.1.0
-psycopg2-binary>=2.9.0          # ← WAJIB untuk PostgreSQL/Neon
+psycopg2-binary>=2.9.0          # WAJIB untuk PostgreSQL/Neon
 cryptography>=41.0.0
 pydub>=0.25.1
 Pillow>=10.0.0
@@ -17,6 +17,6 @@ elevenlabs>=0.2.27
 static-ffmpeg
 openai>=1.30.0
 backoff>=2.2.1
-static-ffmpeg
 tiktok-uploader
+playwright>=1.40.0
 groq

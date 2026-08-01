@@ -1,27 +1,20 @@
 FROM python:3.12-slim
 
+# ffmpeg dipakai video_generator.py & audio_merger.py (tidak terkait TikTok
+# upload). chromium/chromium-driver versi apt SENGAJA tidak dipakai lagi --
+# lihat catatan di bawah.
 RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
-    fonts-liberation \
-    libnss3 \
-    libxi6 \
-    libxrandr2 \
-    libxcomposite1 \
-    libxdamage1 \
-    libgbm1 \
-    libasound2 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-
-ENV CHROME_BIN=/usr/bin/chromium
-ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+
+RUN playwright install --with-deps chromium
+
 COPY . .
 
-CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
