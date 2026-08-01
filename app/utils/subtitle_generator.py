@@ -1,8 +1,10 @@
 from openai import OpenAI
 from app.config import settings
+from groq import Groq
 
 
-client = None
+
+client = Groq(api_key=settings.GROQ_API_KEY)
 if settings.OPENROUTER_API_KEY:
     # Mengarahkan klien OpenAI SDK ke endpoint OpenRouter
     client = OpenAI(
@@ -29,9 +31,8 @@ def generate_ass_subtitles(audio_path: str, output_ass_path: str):
         try:
             with open(audio_path, "rb") as audio_file:
                 response = client.audio.transcriptions.create(
-                    model="openai/whisper-1", # Format model openrouter untuk whisper
-                    file=audio_file,
-                    language="id",
+                    file=open(audio_path, "rb"),
+                    model="whisper-large-v3",
                     response_format="verbose_json"
                 )
 
