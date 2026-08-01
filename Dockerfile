@@ -5,7 +5,6 @@ RUN apt-get update && apt-get install -y \
     chromium-driver \
     fonts-liberation \
     libnss3 \
-    libgconf-2-4 \
     libxi6 \
     libxrandr2 \
     libxcomposite1 \
