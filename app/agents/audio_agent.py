@@ -1,8 +1,15 @@
 import os
+import time
 import requests
 import shutil
 import tempfile
 from app.config import settings
+
+# Jeda antar-request TTS (detik). Supaya traffic ke ElevenLabs tidak
+# terlihat seperti burst otomatis (14 request dalam ~1.8 detik sebelumnya),
+# yang jadi salah satu sinyal umum anti-abuse system. Sesuaikan kalau perlu.
+TTS_REQUEST_DELAY_SECONDS = 1.5
+
 
 def run_audio_generation_agent(script_json: list, voice: str = "mixed") -> list:
     """
@@ -80,6 +87,13 @@ def run_audio_generation_agent(script_json: list, voice: str = "mixed") -> list:
         if not voice_id:
             print(f"[AUDIO] ❌ Voice ID not found for {speaker_raw}")
             continue
+
+        # ============================================================
+        # DELAY sebelum request (kecuali segmen pertama) -- supaya
+        # request tidak dikirim beruntun tanpa jeda.
+        # ============================================================
+        if index > 0 and TTS_REQUEST_DELAY_SECONDS > 0:
+            time.sleep(TTS_REQUEST_DELAY_SECONDS)
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
@@ -183,4 +197,4 @@ def run_audio_generation_agent(script_json: list, voice: str = "mixed") -> list:
         print(f"[AUDIO] ⚠️ {failed_count}/{len(audio_results)} segmen gagal, lanjut dengan {len(success_results)} yang berhasil")
 
     print(f"[AUDIO] ✅ Finished: {len(success_results)} segments generated")
-    return success_result
+    return success_results
