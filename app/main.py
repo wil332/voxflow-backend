@@ -420,3 +420,72 @@ def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Publish TikTok error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
+
+@app.delete("/api/v1/podcast/episode/{database_id}")
+def delete_podcast_episode(database_id: int, db: Session = Depends(get_db)):
+    """
+    Menghapus 1 episode podcast dari database, sekaligus file audio/video
+    terkait di server (kalau ada) supaya tidak jadi sampah storage.
+    """
+    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail=f"Episode dengan ID {database_id} tidak ditemukan.")
+
+    # Hapus file fisik terkait, kalau ada (tidak fatal kalau gagal/tidak ketemu)
+    files_to_delete = []
+    if db_item.merged_audio_filename:
+        files_to_delete.append(os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename))
+    if db_item.video_filename:
+        files_to_delete.append(os.path.join(settings.OUTPUT_VIDEO_DIR, db_item.video_filename))
+
+    for file_path in files_to_delete:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"[DELETE WARNING] Gagal hapus file {file_path}: {e}")
+
+    keyword = db_item.keyword
+    db.delete(db_item)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Episode '{keyword}' (ID {database_id}) berhasil dihapus.",
+        "database_id": database_id
+    }
+
+# DELETE All
+
+@app.delete("/api/v1/podcast/episodes/all")
+def delete_all_podcast_episodes(db: Session = Depends(get_db)):
+    """
+    Menghapus SEMUA episode podcast dari database, sekaligus semua file
+    audio/video terkait. Aksi ini tidak bisa dibatalkan.
+    """
+    all_items = db.query(PodcastHistory).all()
+    deleted_count = len(all_items)
+
+    for db_item in all_items:
+        files_to_delete = []
+        if db_item.merged_audio_filename:
+            files_to_delete.append(os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename))
+        if db_item.video_filename:
+            files_to_delete.append(os.path.join(settings.OUTPUT_VIDEO_DIR, db_item.video_filename))
+
+        for file_path in files_to_delete:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                print(f"[DELETE ALL WARNING] Gagal hapus file {file_path}: {e}")
+
+        db.delete(db_item)
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"{deleted_count} episode berhasil dihapus.",
+        "deleted_count": deleted_count
+    }
