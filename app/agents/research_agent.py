@@ -1,5 +1,5 @@
-import requests
 import time
+import requests
 from app.config import settings
 
 def run_research_agent(keyword: str, language: str = "indonesian") -> str:
