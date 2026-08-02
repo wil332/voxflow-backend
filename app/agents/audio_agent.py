@@ -1,5 +1,3 @@
-# app/agents/audio_agent.py
-
 import os
 import requests
 import shutil
@@ -164,5 +162,25 @@ def run_audio_generation_agent(script_json: list, voice: str = "mixed") -> list:
                 "error": str(e)
             })
 
-    print(f"[AUDIO] ✅ Finished: {len(audio_results)} segments generated")
-    return audio_results
+    # ============================================================
+    # CEK HASIL: audio_results berisi campuran status "success" DAN
+    # "failed"/"error" -- jangan anggap semua "generated" begitu saja,
+    # karena kalau ElevenLabs down/blocked (mis. 401 unusual_activity),
+    # SEMUA segmen bisa masuk sini dengan status gagal, tapi jumlahnya
+    # tetap kelihatan seperti "berhasil" kalau cuma dihitung panjangnya.
+    # ============================================================
+    success_results = [r for r in audio_results if r.get("status") == "success"]
+    failed_count = len(audio_results) - len(success_results)
+
+    if len(success_results) == 0:
+        error_samples = {r.get("error") for r in audio_results if r.get("error")}
+        raise Exception(
+            f"Semua {len(audio_results)} segmen audio gagal digenerate. "
+            f"Contoh error: {next(iter(error_samples), 'unknown')}"
+        )
+
+    if failed_count > 0:
+        print(f"[AUDIO] ⚠️ {failed_count}/{len(audio_results)} segmen gagal, lanjut dengan {len(success_results)} yang berhasil")
+
+    print(f"[AUDIO] ✅ Finished: {len(success_results)} segments generated")
+    return success_result

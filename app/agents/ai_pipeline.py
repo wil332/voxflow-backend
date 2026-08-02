@@ -1,5 +1,6 @@
 import time
 import re
+import traceback
 from app.agents.research_agent import run_research_agent
 from app.agents.script_agent import run_script_agent
 from app.agents.metadata_agent import run_metadata_agent
@@ -101,6 +102,16 @@ def _auto_publish_to_tiktok(job_id: int, keyword: str, audio_segments: list, met
         merged_filename = f"podcast_{clean_keyword}_{job_id}.mp3"
 
         merged_audio = merge_podcast_segments(audio_segments, merged_filename, cleanup_segments=False)
+        if not merged_audio:
+            print(f"[DEBUG AUTO-PUBLISH] ❌ Merge gagal, membatalkan render video")
+            db = SessionLocal()
+            item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+            if item:
+                item.status = "failed"
+                item.error_message = "Merge audio gagal: tidak ada segmen valid (kemungkinan TTS gagal)"
+                db.commit()
+            db.close()
+            return
         print(f"[DEBUG AUTO-PUBLISH] ✅ Audio merged: {merged_audio}")
 
         # Update database
@@ -152,8 +163,14 @@ def _auto_publish_to_tiktok(job_id: int, keyword: str, audio_segments: list, met
 
     except Exception as e:
         print(f"[DEBUG AUTO-PUBLISH] ❌ Error: {e}")
-        import traceback
         traceback.print_exc()
+        db = SessionLocal()
+        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+        if item:
+            item.tiktok_status = "failed"
+            item.tiktok_error = f"Auto-publish error: {e}"
+            db.commit()
+        db.close()
 
 
 def run_ai_pipeline(

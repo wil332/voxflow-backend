@@ -50,22 +50,32 @@ def run_podcast_pipeline_task(
             item.research_summary = str(research_data)
             item.metadata_json = metadata
             item.audio_segments = audio_segments
-            item.status = "completed"
-            item.progress = 100
+            if not item.merged_audio_filename:
+                item.status = "failed"
+                item.error_message = "Audio gagal digenerate atau digabung (cek log ElevenLabs / audio_agent)."
+            elif not item.video_filename:
+                item.status = "failed"
+                item.error_message = "Audio berhasil, tapi render video gagal."
+            else:
+                item.status = "completed"
+
+            item.progress = 100 if item.status == "completed" else item.progress
 
             merged_agent_status = dict(item.agent_status or {})
             merged_agent_status.update({
                 "research": "done",
                 "script": "done",
-                "audio": "done",
+                "audio": "done" if item.merged_audio_filename else "failed",
                 "metadata": "done",
             })
             item.agent_status = merged_agent_status
 
             db.commit()
-            print(f"[TASK] Job {job_id} completed.")
+            print(f"[TASK] Job {job_id} {item.status}.")
 
-        return {"job_id": job_id, "status": "completed"}
+        return {"job_id": job_id, "status": item.status if item else "unknown"}
+
+
 
     except Exception as e:
         print(f"[TASK ERROR] Job {job_id}: {e}")
