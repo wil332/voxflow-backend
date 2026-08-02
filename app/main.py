@@ -457,13 +457,7 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
         raise HTTPException(500, f"Error: {str(e)}")
 
 
-# ============================================================
-# PUBLISH / RETRY PUBLISH KE TIKTOK (manual)
-# ============================================================
-# Upload TikTok sekarang otomatis jalan sebagai bagian dari pipeline utama
-# (lihat ai_pipeline.py -> _auto_publish_to_tiktok). Endpoint ini disediakan
-# sebagai jalur MANUAL untuk retry kalau auto-publish gagal (misal webhook
-# TikTok down saat itu), tanpa perlu menjalankan ulang seluruh pipeline riset.
+
 @app.post("/api/v1/podcast/publish-tiktok/{database_id}")
 def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
     try:
@@ -509,3 +503,39 @@ def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Publish TikTok error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
+
+# DELETE
+
+@app.delete("/api/v1/podcast/episode/{database_id}")
+def delete_podcast_episode(database_id: int, db: Session = Depends(get_db)):
+    """
+    Menghapus 1 episode podcast dari database, sekaligus file audio/video
+    terkait di server (kalau ada) supaya tidak jadi sampah storage.
+    """
+    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail=f"Episode dengan ID {database_id} tidak ditemukan.")
+
+    # Hapus file fisik terkait, kalau ada (tidak fatal kalau gagal/tidak ketemu)
+    files_to_delete = []
+    if db_item.merged_audio_filename:
+        files_to_delete.append(os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename))
+    if db_item.video_filename:
+        files_to_delete.append(os.path.join(settings.OUTPUT_VIDEO_DIR, db_item.video_filename))
+
+    for file_path in files_to_delete:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"[DELETE WARNING] Gagal hapus file {file_path}: {e}")
+
+    keyword = db_item.keyword
+    db.delete(db_item)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Episode '{keyword}' (ID {database_id}) berhasil dihapus.",
+        "database_id": database_id
+    }
