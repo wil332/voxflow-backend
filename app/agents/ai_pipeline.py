@@ -128,7 +128,6 @@ def _auto_publish_to_tiktok(job_id: int, keyword: str, audio_segments: list, met
         print(f"[AUTO PUBLISH ERROR] Job {job_id}: {e}")
         update_tiktok_status(job_id, "failed", error=str(e), progress=100)
 
-
 def run_ai_pipeline(
     keyword: str,
     job_id: int = None,
@@ -136,18 +135,30 @@ def run_ai_pipeline(
     tone: str = "professional",
     voice: str = "mixed",
 ):
-    print(f"[PIPELINE] Memulai pipeline untuk keyword: {keyword} (language={language}, tone={tone}, voice={voice})")
+    print(f"\n{'='*60}")
+    print(f"[DEBUG PIPELINE] 🚀 STARTING PIPELINE")
+    print(f"[DEBUG PIPELINE] Keyword: {keyword}")
+    print(f"[DEBUG PIPELINE] Job ID: {job_id}")
+    print(f"[DEBUG PIPELINE] Language: {language}, Tone: {tone}, Voice: {voice}")
+    print(f"{'='*60}\n")
 
     # === UPDATE STATUS: Research Running ===
     if job_id:
         update_agent_status(job_id, "research", "running", 10)
 
-    # 1. Research Agent (Qwen)
+    # ============================================================
+    # 1. RESEARCH AGENT (Qwen)
+    # ============================================================
+    print(f"[DEBUG PIPELINE] 📚 Step 1/4: Research Agent starting...")
+    start_time = time.time()
     try:
         research_result = run_research_agent(keyword, job_id)
-        print(f"[PIPELINE] Research completed, length: {len(str(research_result))}")
+        print(f"[DEBUG PIPELINE] ✅ Research completed in {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Research result length: {len(str(research_result))}")
     except Exception as e:
-        print(f"[PIPELINE] Research failed: {e}")
+        print(f"[DEBUG PIPELINE] ❌ Research failed after {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Error: {e}")
+        traceback.print_exc()
         if job_id:
             update_agent_status(job_id, "research", "failed", 0)
         raise
@@ -157,12 +168,19 @@ def run_ai_pipeline(
         update_agent_status(job_id, "research", "done", 30)
         update_agent_status(job_id, "script", "running", 35)
 
-    # 2. Script Agent (Agnes)
+    # ============================================================
+    # 2. SCRIPT AGENT (Agnes)
+    # ============================================================
+    print(f"[DEBUG PIPELINE] 📝 Step 2/4: Script Agent starting...")
+    start_time = time.time()
     try:
         script_result = run_script_agent(research_result, language=language, tone=tone)
-        print(f"[PIPELINE] Script completed, {len(script_result)} segments")
+        print(f"[DEBUG PIPELINE] ✅ Script completed in {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Script segments: {len(script_result)}")
     except Exception as e:
-        print(f"[PIPELINE] Script failed: {e}")
+        print(f"[DEBUG PIPELINE] ❌ Script failed after {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Error: {e}")
+        traceback.print_exc()
         if job_id:
             update_agent_status(job_id, "script", "failed", 0)
         raise
@@ -172,12 +190,19 @@ def run_ai_pipeline(
         update_agent_status(job_id, "script", "done", 50)
         update_agent_status(job_id, "audio", "running", 55)
 
-    # 3. Audio Agent (ElevenLabs)
+    # ============================================================
+    # 3. AUDIO AGENT (ElevenLabs)
+    # ============================================================
+    print(f"[DEBUG PIPELINE] 🎵 Step 3/4: Audio Agent starting...")
+    start_time = time.time()
     try:
         audio_segments = run_audio_agent(script_result, voice=voice)
-        print(f"[PIPELINE] Audio completed, {len(audio_segments)} segments")
+        print(f"[DEBUG PIPELINE] ✅ Audio completed in {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Audio segments: {len(audio_segments)}")
     except Exception as e:
-        print(f"[PIPELINE] Audio failed: {e}")
+        print(f"[DEBUG PIPELINE] ❌ Audio failed after {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Error: {e}")
+        traceback.print_exc()
         if job_id:
             update_agent_status(job_id, "audio", "failed", 0)
         raise
@@ -187,12 +212,18 @@ def run_ai_pipeline(
         update_agent_status(job_id, "audio", "done", 80)
         update_agent_status(job_id, "metadata", "running", 85)
 
-    # 4. Metadata Agent (Qwen)
+    # ============================================================
+    # 4. METADATA AGENT (Qwen)
+    # ============================================================
+    print(f"[DEBUG PIPELINE] 🏷️ Step 4/4: Metadata Agent starting...")
+    start_time = time.time()
     try:
         metadata_result = run_metadata_agent(keyword, research_result)
-        print(f"[PIPELINE] Metadata completed")
+        print(f"[DEBUG PIPELINE] ✅ Metadata completed in {time.time() - start_time:.2f}s")
     except Exception as e:
-        print(f"[PIPELINE] Metadata failed: {e}")
+        print(f"[DEBUG PIPELINE] ❌ Metadata failed after {time.time() - start_time:.2f}s")
+        print(f"[DEBUG PIPELINE] Error: {e}")
+        traceback.print_exc()
         if job_id:
             update_agent_status(job_id, "metadata", "failed", 0)
         raise
@@ -201,13 +232,16 @@ def run_ai_pipeline(
     if job_id:
         update_agent_status(job_id, "metadata", "done", 90)
 
-    print(f"[PIPELINE SUCCESS] Pipeline utama selesai untuk keyword: {keyword}")
+    print(f"\n{'='*60}")
+    print(f"[DEBUG PIPELINE] ✅ PIPELINE COMPLETED!")
+    print(f"[DEBUG PIPELINE] Total time: {time.time() - start_time:.2f}s")
+    print(f"{'='*60}\n")
 
-    # === TAHAP OTOMATIS BARU: Merge Audio -> Render Video -> Upload TikTok ===
-    # Dijalankan otomatis di sini supaya user tidak perlu klik "Merge Audio"
-    # dan "Render Video" manual lagi. Kegagalan di tahap ini tidak melempar
-    # exception ke atas -- podcast intinya (audio segments) sudah berhasil dibuat.
+    # ============================================================
+    # AUTO-PUBLISH (Merge Audio → Render Video → TikTok)
+    # ============================================================
     if job_id:
+        print(f"[DEBUG PIPELINE] 📤 Starting auto-publish...")
         _auto_publish_to_tiktok(job_id, keyword, audio_segments, metadata_result)
 
     return research_result, script_result, metadata_result, audio_segments
