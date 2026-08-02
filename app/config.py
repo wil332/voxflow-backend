@@ -27,7 +27,7 @@ class Settings:
 
     FFMPEG_THREADS: int = int(os.getenv("FFMPEG_THREADS", "2"))
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    BGM_PATH: str = os.getenv("BGM_PATH", "")
+    BGM_PATH: str = os.getenv("BGM_PATH", "assets/bgm/bgm.mp3")
     STORAGE_DIR: str = os.getenv("STORAGE_DIR", ".")
 
     @property
