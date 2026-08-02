@@ -26,6 +26,8 @@ class Settings:
     TIKTOK_CSRF_TOKEN: str = os.getenv("TIKTOK_CSRF_TOKEN", "").strip()
 
     FFMPEG_THREADS: int = int(os.getenv("FFMPEG_THREADS", "2"))
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    BGM_PATH: str = os.getenv("BGM_PATH", "")
     STORAGE_DIR: str = os.getenv("STORAGE_DIR", ".")
 
     @property

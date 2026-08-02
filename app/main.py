@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -62,11 +62,18 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://localhost:3000",
-        "https://*.railway.app",
-        "https://*.vercel.app",
-        "*"
     ],
-    allow_credentials=True,
+    # "https://*.vercel.app" dan "https://*.railway.app" TIDAK bisa taruh di
+    # allow_origins -- Starlette cocokkan itu secara exact-string-match, bukan
+    # glob/wildcard, jadi tidak pernah match origin asli seperti
+    # "https://voxflow-frontend.vercel.app". Wildcard subdomain yang benar
+    # harus lewat allow_origin_regex (regex asli).
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.railway\.app",
+    # allow_credentials=False karena tidak ada fetch di frontend yang pakai
+    # `credentials: "include"` (tidak ada cookie/session cross-origin).
+    # Kombinasi allow_origins=["*"] + allow_credentials=True juga TIDAK valid
+    # secara spesifikasi CORS -- browser akan menolak response semacam itu.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -108,8 +115,25 @@ def debug_info():
             "agnes": "set" if settings.AGNES_API_KEY else "MISSING",
             "elevenlabs": "set" if settings.ELEVENLABS_API_KEY else "MISSING",
             "groq": "set" if settings.GROQ_API_KEY else "MISSING",
+            "openai": "set" if settings.OPENAI_API_KEY else "MISSING (subtitle akan di-skip)",
+            "openrouter": "set" if settings.OPENROUTER_API_KEY else "MISSING",
         }
     }
+
+# ============================================================
+# RSS FEED (untuk hosting podcast: Spotify, Apple Podcasts, dll)
+# ============================================================
+from fastapi.responses import Response
+
+@app.get("/api/v1/podcast/rss")
+def get_podcast_rss_feed(db: Session = Depends(get_db)):
+    try:
+        from app.utils.rss_generator import generate_rss_feed
+        xml_content = generate_rss_feed(db, base_url=settings.BASE_URL)
+        return Response(content=xml_content, media_type="application/rss+xml")
+    except Exception as e:
+        logger.error(f"RSS feed error: {e}")
+        raise HTTPException(500, f"Gagal generate RSS feed: {str(e)}")
 
 # ============================================================
 # HISTORY ENDPOINT
@@ -142,7 +166,6 @@ def get_podcast_history(db: Session = Depends(get_db)):
 @app.post("/api/v1/podcast/generate")
 def trigger_podcast_generation(
     keyword: str,
-    background_tasks: BackgroundTasks,
     language: str = "indonesian",
     tone: str = "professional",
     voice: str = "mixed",
@@ -190,84 +213,24 @@ def trigger_podcast_generation(
 
         logger.info(f"Created job {db_item.id} for keyword: {keyword}")
 
-        def run_pipeline():
-            try:
-                from app.database.database import SessionLocal
-                from app.agents.ai_pipeline import run_ai_pipeline
-
-                bg_db = SessionLocal()
-                try:
-                    item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-                    if item:
-                        item.status = "processing"
-                        item.progress = 5
-                        item.agent_status = {
-                            "research": "pending",
-                            "script": "pending",
-                            "audio": "pending",
-                            "metadata": "pending",
-                            "tiktok": "pending"
-                        }
-                        bg_db.commit()
-                        print(f"[MAIN] Job {db_item.id} initialized")
-
-                        # Jalankan pipeline dengan job_id.
-                        # CATATAN: run_ai_pipeline sekarang JUGA menjalankan
-                        # merge audio -> render video -> upload TikTok secara
-                        # otomatis di dalamnya sebelum return, jadi baris ini
-                        # baru selesai setelah semua tahap itu (termasuk
-                        # publish TikTok) sudah dicoba.
-                        research_data, script_json, metadata, audio_segments = run_ai_pipeline(
-                            keyword, db_item.id, language=language, tone=tone, voice=voice
-                        )
-
-                        # PENTING: refresh dulu supaya kita dapat agent_status
-                        # dan tiktok_status TERBARU yang sudah di-commit oleh
-                        # sesi database lain di dalam run_ai_pipeline (termasuk
-                        # hasil auto-publish TikTok). Tanpa refresh, "item" di
-                        # sini masih memegang data lama dari sebelum pipeline jalan.
-                        bg_db.refresh(item)
-
-                        item.research_summary = str(research_data)
-                        item.metadata_json = metadata
-                        item.audio_segments = audio_segments
-                        item.status = "completed"
-                        item.progress = 100
-
-                        # Merge, JANGAN overwrite penuh -- supaya key "tiktok"
-                        # yang sudah di-set oleh auto-publish tidak hilang
-                        # tertimpa dict baru yang tidak punya key itu.
-                        merged_agent_status = dict(item.agent_status or {})
-                        merged_agent_status.update({
-                            "research": "done",
-                            "script": "done",
-                            "audio": "done",
-                            "metadata": "done",
-                        })
-                        item.agent_status = merged_agent_status
-
-                        bg_db.commit()
-                        logger.info(f"Pipeline completed for job {db_item.id}")
-
-                except Exception as e:
-                    logger.error(f"Pipeline error: {e}", exc_info=True)
-                    if bg_db:
-                        item = bg_db.query(PodcastHistory).filter(PodcastHistory.id == db_item.id).first()
-                        if item:
-                            item.status = "failed"
-                            item.error_message = str(e)
-                            bg_db.commit()
-                finally:
-                    bg_db.close()
-            except Exception as e:
-                logger.error(f"Background task error: {e}", exc_info=True)
-
-        background_tasks.add_task(run_pipeline)
+        # ============================================================
+        # ENQUEUE KE CELERY -- BUKAN BackgroundTasks lagi.
+        # ============================================================
+        # BackgroundTasks bawaan FastAPI MASIH jalan di proses/event loop
+        # yang sama dengan web server -- kalau ada beberapa job generate
+        # bersamaan, proses TTS/render FFmpeg yang berat bisa saling rebutan
+        # resource dengan request HTTP lain yang sedang dilayani. Celery task
+        # dijalankan di WORKER PROCESS TERPISAH (lihat Procfile), jadi web
+        # server tetap responsif walau ada job berat sedang diproses.
+        from app.tasks import run_podcast_pipeline_task
+        run_podcast_pipeline_task.delay(
+            db_item.id, keyword, language=language, tone=tone, voice=voice
+        )
 
         return {
             "job_id": db_item.id,
             "status": "processing",
-            "message": "Pipeline started"
+            "message": "Pipeline started (queued via Celery)"
         }
     except Exception as e:
         logger.error(f"Generate error: {e}", exc_info=True)
@@ -350,12 +313,12 @@ def get_video_stream(video_filename: str):
         raise HTTPException(500, f"Error: {str(e)}")
 
 # ============================================================
-# MERGE AUDIO (manual / retry)
+# MERGE AUDIO (manual / retry) -- ASYNC via Celery
 # ============================================================
-@app.post("/api/v1/podcast/merge-audio/{database_id}")
+@app.post("/api/v1/podcast/merge-audio/{database_id}", status_code=202)
 def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
     try:
-        from app.utils.audio_merger import merge_podcast_segments
+        from app.tasks import merge_audio_task
 
         db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
         if not db_item:
@@ -365,21 +328,16 @@ def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
         if db_item.status != "completed":
             raise HTTPException(400, "Podcast belum selesai diproses.")
 
-        clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
-        clean_keyword = clean_keyword.replace(' ', '_')[:50]
-        merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
+        task = merge_audio_task.delay(database_id)
 
-        merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
-
-        db_item.merged_audio_filename = merged_audio_filename
-        db.commit()
-        db.refresh(db_item)
-
+        # Status 202 Accepted -- permintaan diterima dan diantre, BELUM
+        # selesai. Frontend polling /status/{id} atau /history untuk tahu
+        # kapan merged_audio_filename benar-benar terisi.
         return {
-            "status": "completed",
-            "database_id": db_item.id,
-            "merged_audio_filename": merged_audio_filename,
-            "download_url": f"/api/v1/podcast/download/{merged_audio_filename}"
+            "status": "queued",
+            "database_id": database_id,
+            "task_id": task.id,
+            "message": "Merge audio sedang diproses di background."
         }
     except HTTPException:
         raise
@@ -388,14 +346,12 @@ def merge_podcast_audio(database_id: int, db: Session = Depends(get_db)):
         raise HTTPException(500, f"Error: {str(e)}")
 
 # ============================================================
-# GENERATE VIDEO (manual / retry)
+# GENERATE VIDEO (manual / retry) -- ASYNC via Celery
 # ============================================================
-@app.post("/api/v1/podcast/generate-video/{database_id}")
+@app.post("/api/v1/podcast/generate-video/{database_id}", status_code=202)
 def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
     try:
-        from app.utils.video_generator import create_tiktok_video_with_subtitles
-        from app.utils.audio_merger import merge_podcast_segments
-        from app.agents.tiktok_agent import publish_to_tiktok_webhook
+        from app.tasks import generate_video_task, merge_audio_task
 
         db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
         if not db_item:
@@ -406,49 +362,23 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
             raise HTTPException(400, "Podcast belum selesai diproses.")
 
         if not db_item.merged_audio_filename:
-            clean_keyword = re.sub(r'[\\/*?:"<>|]', '', db_item.keyword or "podcast")
-            clean_keyword = clean_keyword.replace(' ', '_')[:50]
-            merged_filename = f"podcast_{clean_keyword}_{database_id}.mp3"
-            merged_audio_filename = merge_podcast_segments(db_item.audio_segments, merged_filename, cleanup_segments=False)
-            db_item.merged_audio_filename = merged_audio_filename
-            db.commit()
-            db.refresh(db_item)
-
-        metadata = db_item.metadata_json or {}
-        video_filename = create_tiktok_video_with_subtitles(db_item.merged_audio_filename, metadata)
-
-        if not video_filename:
-            raise HTTPException(500, "Gagal merender video.")
-
-        db_item.video_filename = video_filename
-        db.commit()
-        db.refresh(db_item)
-
-        # ============================================================
-        # BARU: Otomatis lanjut upload ke TikTok, tanpa klik manual terpisah
-        # ============================================================
-        tiktok_metadata = metadata.get("tiktok", metadata)  # fallback kalau metadata belum multi-platform
-        tiktok_result = publish_to_tiktok_webhook(video_filename, tiktok_metadata)
-
-        db_item.tiktok_status = tiktok_result.get("status")
-        if tiktok_result.get("status") == "success":
-            db_item.tiktok_url = tiktok_result.get("data", {}).get("url") or None
+            # Merge dulu (juga async), baru render video -- dirantai lewat
+            # Celery chain supaya render video otomatis jalan begitu merge
+            # selesai, tanpa perlu request terpisah dari frontend.
+            # .si() (immutable signature) dipakai untuk generate_video_task
+            # supaya dia TIDAK menerima return value merge_audio_task (dict)
+            # sebagai argumen tambahan -- generate_video_task cuma butuh
+            # database_id yang sudah kita tahu, bukan hasil task sebelumnya.
+            chain = merge_audio_task.s(database_id) | generate_video_task.si(database_id)
+            task = chain.apply_async()
         else:
-            db_item.tiktok_error = tiktok_result.get("error")
-        db.commit()
-        db.refresh(db_item)
+            task = generate_video_task.delay(database_id)
 
         return {
-            "status": "completed",
-            "database_id": db_item.id,
-            "video_filename": video_filename,
-            "video_stream_url": f"/api/v1/podcast/video/{video_filename}",
-            "tiktok_upload": tiktok_result,
-            "message": (
-                "Video berhasil dibuat DAN otomatis diupload ke TikTok!"
-                if tiktok_result.get("status") == "success"
-                else "Video berhasil dibuat, tapi upload TikTok gagal (cek field tiktok_upload)."
-            )
+            "status": "queued",
+            "database_id": database_id,
+            "task_id": task.id,
+            "message": "Render video sedang diproses di background."
         }
     except HTTPException:
         raise
@@ -456,12 +386,17 @@ def generate_podcast_video(database_id: int, db: Session = Depends(get_db)):
         logger.error(f"Generate video error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
 
-
-
-@app.post("/api/v1/podcast/publish-tiktok/{database_id}")
+# ============================================================
+# PUBLISH / RETRY PUBLISH KE TIKTOK (manual)
+# ============================================================
+# Upload TikTok sekarang otomatis jalan sebagai bagian dari pipeline utama
+# (lihat ai_pipeline.py -> _auto_publish_to_tiktok). Endpoint ini disediakan
+# sebagai jalur MANUAL untuk retry kalau auto-publish gagal (misal webhook
+# TikTok down saat itu), tanpa perlu menjalankan ulang seluruh pipeline riset.
+@app.post("/api/v1/podcast/publish-tiktok/{database_id}", status_code=202)
 def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
     try:
-        from app.agents.tiktok_agent import publish_to_tiktok_webhook
+        from app.tasks import publish_tiktok_task
 
         db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
         if not db_item:
@@ -472,105 +407,16 @@ def publish_podcast_to_tiktok(database_id: int, db: Session = Depends(get_db)):
         db_item.tiktok_status = "uploading"
         db.commit()
 
-        metadata = db_item.metadata_json or {}
-        result = publish_to_tiktok_webhook(db_item.video_filename, metadata)
-
-        if result.get("status") == "success":
-            data = result.get("data") or {}
-            tiktok_url = data.get("video_url") or data.get("url") or data.get("share_url") if isinstance(data, dict) else None
-            db_item.tiktok_status = "success"
-            db_item.tiktok_url = tiktok_url
-            db_item.tiktok_error = None
-        else:
-            db_item.tiktok_status = "failed"
-            db_item.tiktok_error = result.get("error", "Unknown error")
-
-        if db_item.agent_status is not None:
-            updated = dict(db_item.agent_status)
-            updated["tiktok"] = db_item.tiktok_status
-            db_item.agent_status = updated
-
-        db.commit()
-        db.refresh(db_item)
+        task = publish_tiktok_task.delay(database_id)
 
         return {
-            "status": db_item.tiktok_status,
-            "tiktok_url": db_item.tiktok_url,
-            "error": db_item.tiktok_error,
+            "status": "queued",
+            "database_id": database_id,
+            "task_id": task.id,
+            "message": "Publish TikTok sedang diproses di background."
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Publish TikTok error: {e}")
         raise HTTPException(500, f"Error: {str(e)}")
-
-# DELETE
-
-@app.delete("/api/v1/podcast/episode/{database_id}")
-def delete_podcast_episode(database_id: int, db: Session = Depends(get_db)):
-    """
-    Menghapus 1 episode podcast dari database, sekaligus file audio/video
-    terkait di server (kalau ada) supaya tidak jadi sampah storage.
-    """
-    db_item = db.query(PodcastHistory).filter(PodcastHistory.id == database_id).first()
-    if not db_item:
-        raise HTTPException(status_code=404, detail=f"Episode dengan ID {database_id} tidak ditemukan.")
-
-    # Hapus file fisik terkait, kalau ada (tidak fatal kalau gagal/tidak ketemu)
-    files_to_delete = []
-    if db_item.merged_audio_filename:
-        files_to_delete.append(os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename))
-    if db_item.video_filename:
-        files_to_delete.append(os.path.join(settings.OUTPUT_VIDEO_DIR, db_item.video_filename))
-
-    for file_path in files_to_delete:
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception as e:
-            print(f"[DELETE WARNING] Gagal hapus file {file_path}: {e}")
-
-    keyword = db_item.keyword
-    db.delete(db_item)
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Episode '{keyword}' (ID {database_id}) berhasil dihapus.",
-        "database_id": database_id
-    }
-
-# DELETE All
-
-@app.delete("/api/v1/podcast/episodes/all")
-def delete_all_podcast_episodes(db: Session = Depends(get_db)):
-    """
-    Menghapus SEMUA episode podcast dari database, sekaligus semua file
-    audio/video terkait. Aksi ini tidak bisa dibatalkan.
-    """
-    all_items = db.query(PodcastHistory).all()
-    deleted_count = len(all_items)
-
-    for db_item in all_items:
-        files_to_delete = []
-        if db_item.merged_audio_filename:
-            files_to_delete.append(os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename))
-        if db_item.video_filename:
-            files_to_delete.append(os.path.join(settings.OUTPUT_VIDEO_DIR, db_item.video_filename))
-
-        for file_path in files_to_delete:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception as e:
-                print(f"[DELETE ALL WARNING] Gagal hapus file {file_path}: {e}")
-
-        db.delete(db_item)
-
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"{deleted_count} episode berhasil dihapus.",
-        "deleted_count": deleted_count
-    }

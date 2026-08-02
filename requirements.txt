@@ -20,3 +20,6 @@ backoff>=2.2.1
 tiktok-uploader
 playwright>=1.40.0
 groq
+celery>=5.3.0
+redis>=5.0.0
+flower>=2.0.0

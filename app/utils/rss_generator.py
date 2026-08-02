@@ -1,13 +1,3 @@
-"""
-app/utils/rss_generator.py
-
-Generate RSS Feed XML standar podcast (format yang diterima Spotify, Apple Podcasts, dll)
-dari data yang tersimpan di tabel PodcastHistory.
-
-Cara pakai: panggil generate_rss_feed(db) untuk dapat string XML,
-lalu serve lewat endpoint FastAPI (lihat contoh endpoint di bawah).
-"""
-
 from datetime import datetime
 from xml.sax.saxutils import escape
 from app.database.models import PodcastHistory
@@ -18,19 +8,44 @@ def generate_rss_feed(db: Session, base_url: str = "http://localhost:8000") -> s
     episodes = db.query(PodcastHistory).order_by(PodcastHistory.created_at.desc()).all()
 
     items_xml = ""
-    for index, ep in enumerate(episodes):
+    episode_number = 0
+
+    for ep in episodes:
+        # CATATAN PERBAIKAN #1:
+        # Sebelumnya nama file audio DIREKONSTRUKSI dari keyword:
+        #   f"podcast_{ep.keyword.replace(' ', '_')}.mp3"
+        # Ini TIDAK PERNAH cocok dengan nama file asli yang benar-benar
+        # tersimpan di disk. Nama file asli (lihat main.py/ai_pipeline.py)
+        # dibuat lewat re.sub() untuk membersihkan karakter ilegal DAN
+        # ditambah suffix "_{id}" -- rekonstruksi manual di atas selalu
+        # menghasilkan URL yang 404. Sekarang pakai `merged_audio_filename`
+        # yang SUDAH tersimpan di database (nama file yang sebenarnya ada).
+        if not ep.merged_audio_filename:
+            # Episode belum selesai di-merge -- skip dari RSS, bukan
+            # menampilkan link yang pasti 404.
+            continue
+
+        episode_number += 1
+
+        # CATATAN PERBAIKAN #2:
+        # Sebelumnya kode ini mengasumsikan metadata_json berbentuk
+        # {"spotify": {"episode_title": ..., "show_notes": ...}}. Tapi
+        # metadata_agent.py menghasilkan struktur FLAT:
+        # {"title": ..., "description": ..., "tags": [...], ...} -- tanpa
+        # key "spotify" sama sekali. Akibatnya title/description selalu
+        # jatuh ke fallback (keyword/research_summary), metadata asli hasil
+        # AI tidak pernah kepakai di RSS. Sekarang baca langsung dari root.
         metadata = ep.metadata_json or {}
-        spotify_meta = metadata.get("spotify", {})
+        title = escape(metadata.get("title", ep.keyword or "Untitled Episode"))
+        description = escape(metadata.get("description", ep.research_summary or ""))
 
-        title = escape(spotify_meta.get("episode_title", ep.keyword))
-        description = escape(spotify_meta.get("show_notes", ep.research_summary or ""))
-        pub_date = ep.created_at.strftime("%a, %d %b %Y %H:%M:%S +0000") if ep.created_at else datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+        pub_date = (
+            ep.created_at.strftime("%a, %d %b %Y %H:%M:%S +0000")
+            if ep.created_at
+            else datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+        )
 
-        # Nama file audio mengikuti pola yang dipakai endpoint /download
-        audio_filename = f"podcast_{ep.keyword.replace(' ', '_')}.mp3"
-        audio_url = f"{base_url}/api/v1/podcast/download/{audio_filename}"
-
-        episode_number = len(episodes) - index  # episode terbaru = nomor tertinggi
+        audio_url = f"{base_url}/api/v1/podcast/download/{ep.merged_audio_filename}"
 
         items_xml += f"""
     <item>
