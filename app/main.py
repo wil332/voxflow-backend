@@ -62,6 +62,8 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://localhost:3000",
+        "https://voxflow-frontend.vercel.app",  # ← TAMBAHKAN INI
+        "https://voxflow-frontend-k3p2yo679-voxflow-podcast-ai.vercel.app"
     ],
     # "https://*.vercel.app" dan "https://*.railway.app" TIDAK bisa taruh di
     # allow_origins -- Starlette cocokkan itu secara exact-string-match, bukan
