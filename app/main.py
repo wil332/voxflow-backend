@@ -539,3 +539,38 @@ def delete_podcast_episode(database_id: int, db: Session = Depends(get_db)):
         "message": f"Episode '{keyword}' (ID {database_id}) berhasil dihapus.",
         "database_id": database_id
     }
+
+# DELETE All
+
+@app.delete("/api/v1/podcast/episodes/all")
+def delete_all_podcast_episodes(db: Session = Depends(get_db)):
+    """
+    Menghapus SEMUA episode podcast dari database, sekaligus semua file
+    audio/video terkait. Aksi ini tidak bisa dibatalkan.
+    """
+    all_items = db.query(PodcastHistory).all()
+    deleted_count = len(all_items)
+
+    for db_item in all_items:
+        files_to_delete = []
+        if db_item.merged_audio_filename:
+            files_to_delete.append(os.path.join(settings.OUTPUT_AUDIO_DIR, db_item.merged_audio_filename))
+        if db_item.video_filename:
+            files_to_delete.append(os.path.join(settings.OUTPUT_VIDEO_DIR, db_item.video_filename))
+
+        for file_path in files_to_delete:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                print(f"[DELETE ALL WARNING] Gagal hapus file {file_path}: {e}")
+
+        db.delete(db_item)
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"{deleted_count} episode berhasil dihapus.",
+        "deleted_count": deleted_count
+    }
