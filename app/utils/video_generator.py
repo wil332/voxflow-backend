@@ -34,6 +34,28 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
     audio_path = os.path.join(audio_dir, audio_filename)
     video_filename = audio_filename.replace(".mp3", ".mp4")
     output_video_path = os.path.join(output_dir, video_filename)
+
+    # ============================================================
+    # CATATAN PERBAIKAN -- kenapa ada file .mp4 48 byte (corrupt):
+    # ============================================================
+    # Sebelumnya FFmpeg nulis LANGSUNG ke output_video_path. Kalau proses
+    # gagal di tengah jalan (timeout, atau di-OOM-kill oleh container),
+    # file yang BARU SEBAGIAN ditulis itu tetap tertinggal di disk -- kode
+    # lama tidak pernah menghapusnya saat gagal. Efeknya: file .mp4 corrupt
+    # (cuma beberapa byte header MP4 tanpa isi) numpuk di volume, padahal
+    # di database video_filename tidak pernah ke-set (karena fungsi ini
+    # tetap return "" saat gagal) -- jadi ke-detect sebagai "sampah" yang
+    # membingungkan.
+    #
+    # Fix: FFmpeg nulis ke file SEMENTARA dulu (path_temp), baru di-rename
+    # ke path final PAKAI os.replace() -- HANYA kalau proses benar-benar
+    # sukses. os.replace() dalam direktori yang SAMA itu operasi atomik
+    # (bukan cross-device, jadi tidak kena masalah Errno 18 yang pernah kita
+    # alami di audio_agent.py dulu). Kalau gagal di titik manapun, file
+    # sementara ini yang dihapus -- path final TIDAK PERNAH berisi file
+    # corrupt.
+    temp_video_path = output_video_path + ".tmp"
+
     background_image = os.path.join(assets_dir, "tiktok_bg.png")
 
     ensure_background_exists(background_image)
@@ -48,7 +70,6 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
     if os.path.getsize(audio_path) == 0:
         print("[ERROR] Audio kosong.")
         return ""
-
 
     ass_path = os.path.join(output_dir, f"temp_{audio_filename.replace('.mp3', '')}.ass")
     use_subtitle = True
@@ -97,11 +118,18 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         "-c:a", "aac",
         "-pix_fmt", "yuv420p",
         "-shortest",
-        output_video_path,
+        temp_video_path,  # <- tulis ke temp dulu, bukan output_video_path
     ]
 
     print("\n========== FFMPEG COMMAND ==========")
     print(" ".join(cmd))
+
+    def _cleanup_temp():
+        if os.path.exists(temp_video_path):
+            try:
+                os.remove(temp_video_path)
+            except Exception as cleanup_err:
+                print(f"[VIDEO ENGINE] ⚠️ Gagal hapus file temp {temp_video_path}: {cleanup_err}")
 
     try:
         print("\n[VIDEO ENGINE] Rendering video...\n")
@@ -128,15 +156,22 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
             if result.returncode < 0:
                 print(f"[VIDEO ENGINE ERROR] Proses dibunuh oleh sinyal {-result.returncode} "
                       f"(sinyal 9 = SIGKILL, biasanya OOM killer container kehabisan memori).")
+            _cleanup_temp()
             return ""
 
-        if not os.path.exists(output_video_path):
-            print("[ERROR] Output video tidak ditemukan.")
+        if not os.path.exists(temp_video_path):
+            print("[ERROR] Output video sementara tidak ditemukan.")
             return ""
 
-        if os.path.getsize(output_video_path) == 0:
-            print("[ERROR] Output video kosong.")
+        if os.path.getsize(temp_video_path) < 1000:
+            # File terlalu kecil untuk video valid (mp4 header minimal
+            # ratusan byte) -- ini persis pola file 48-byte yang ditemukan.
+            print(f"[ERROR] Output video terlalu kecil ({os.path.getsize(temp_video_path)} bytes), dianggap corrupt.")
+            _cleanup_temp()
             return ""
+
+        # Rename atomik ke path final -- HANYA setelah semua validasi lolos.
+        os.replace(temp_video_path, output_video_path)
 
         print("\n====================================")
         print("[VIDEO ENGINE SUCCESS]")
@@ -150,6 +185,7 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         print("[VIDEO ENGINE ERROR] FFmpeg timeout -- proses dihentikan paksa setelah 600 detik.")
         if os.path.exists(ass_path):
             os.remove(ass_path)
+        _cleanup_temp()
         return ""
 
     except Exception as e:
@@ -157,4 +193,5 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         print(str(e))
         if os.path.exists(ass_path):
             os.remove(ass_path)
+        _cleanup_temp()
         return ""

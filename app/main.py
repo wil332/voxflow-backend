@@ -137,6 +137,42 @@ def get_podcast_rss_feed(db: Session = Depends(get_db)):
         logger.error(f"RSS feed error: {e}")
         raise HTTPException(500, f"Gagal generate RSS feed: {str(e)}")
 
+ ============================================================
+# MAINTENANCE: Bersihkan file corrupt sisa bug lama di volume
+# ============================================================
+@app.post("/api/v1/debug/cleanup-corrupt-files")
+def cleanup_corrupt_files(min_bytes: int = 1000):
+    """
+    Hapus file .mp4/.mp3 yang ukurannya di bawah `min_bytes` -- sisa dari
+    bug lama di video_generator.py (FFmpeg gagal/OOM-kill di tengah render,
+    file setengah jadi tertinggal di disk). Aman dipanggil kapan saja --
+    file yang masih dipakai/valid (di atas threshold) tidak disentuh.
+    """
+    removed = []
+    errors = []
+
+    for directory in [settings.OUTPUT_VIDEO_DIR, settings.OUTPUT_AUDIO_DIR]:
+        if not os.path.isdir(directory):
+            continue
+        for filename in os.listdir(directory):
+            file_path = os.path.join(directory, filename)
+            if not os.path.isfile(file_path):
+                continue
+            try:
+                size = os.path.getsize(file_path)
+                if size < min_bytes:
+                    os.remove(file_path)
+                    removed.append({"file": filename, "size_bytes": size})
+            except Exception as e:
+                errors.append({"file": filename, "error": str(e)})
+
+    return {
+        "status": "success",
+        "removed_count": len(removed),
+        "removed_files": removed,
+        "errors": errors,
+    }
+
 # ============================================================
 # HISTORY ENDPOINT
 # ============================================================
