@@ -75,59 +75,86 @@ def _save_output_files(job_id: int, merged_audio_filename: str = None, video_fil
         db.close()
 
 
-def _auto_publish_to_tiktok(job_id: int, keyword: str, audio_segments: list, metadata_result: dict):
-    """
-    Tahap otomatis setelah pipeline utama (research/script/audio/metadata) selesai:
-    1. Merge semua segmen audio jadi satu file MP3
-    2. Render video TikTok (MP4 + subtitle) dari audio yang sudah digabung
-    3. Upload/publish video tersebut ke TikTok lewat webhook
+def _auto_publish_to_tiktok(job_id: int, keyword: str, audio_segments: list, metadata: dict):
+    """Auto merge audio → render video → upload TikTok"""
+    print(f"[DEBUG AUTO-PUBLISH] 🔄 Starting auto-publish for job {job_id}")
 
-    Kalau ada satu step gagal, status tiktok di-set "failed" dengan pesan error,
-    tapi TIDAK melempar exception ke atas -- kegagalan di tahap ini tidak boleh
-    membuat status pipeline utama ("research/script/audio/metadata") ikut jadi
-    "failed", karena konten podcast intinya sudah berhasil dibuat.
-    """
-    from app.utils.audio_merger import merge_podcast_segments
-    from app.utils.video_generator import create_tiktok_video_with_subtitles
-
-    update_tiktok_status(job_id, "uploading", progress=92)
+    if not audio_segments or len(audio_segments) == 0:
+        print("[DEBUG AUTO-PUBLISH] ❌ No audio segments to process")
+        return
 
     try:
+        from app.utils.audio_merger import merge_podcast_segments
+        from app.utils.video_generator import create_tiktok_video_with_subtitles
+        from app.agents.tiktok_agent import publish_to_tiktok_webhook
+        import re
+
+        print(f"[DEBUG AUTO-PUBLISH] 📊 Audio segments count: {len(audio_segments)}")
+
+        # ============================================================
+        # 1. MERGE AUDIO
+        # ============================================================
+        print(f"[DEBUG AUTO-PUBLISH] 🎵 Step 1: Merging audio...")
+
         clean_keyword = re.sub(r'[\\/*?:"<>|]', '', keyword or "podcast")
         clean_keyword = clean_keyword.replace(' ', '_')[:50]
         merged_filename = f"podcast_{clean_keyword}_{job_id}.mp3"
 
-        print(f"[AUTO PUBLISH] Merging audio for job {job_id}...")
-        merged_audio_filename = merge_podcast_segments(
-            audio_segments, merged_filename, cleanup_segments=False
-        )
-        _save_output_files(job_id, merged_audio_filename=merged_audio_filename)
-        update_tiktok_status(job_id, "uploading", progress=95)
+        merged_audio = merge_podcast_segments(audio_segments, merged_filename, cleanup_segments=False)
+        print(f"[DEBUG AUTO-PUBLISH] ✅ Audio merged: {merged_audio}")
 
-        print(f"[AUTO PUBLISH] Rendering video for job {job_id}...")
-        video_filename = create_tiktok_video_with_subtitles(merged_audio_filename, metadata_result or {})
-        if not video_filename:
-            raise RuntimeError("Gagal merender video (create_tiktok_video_with_subtitles mengembalikan kosong)")
-        _save_output_files(job_id, video_filename=video_filename)
-        update_tiktok_status(job_id, "uploading", progress=98)
+        # Update database
+        db = SessionLocal()
+        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+        if item:
+            item.merged_audio_filename = merged_audio
+            db.commit()
+            print(f"[DEBUG AUTO-PUBLISH] ✅ Database updated with merged audio")
+        db.close()
 
-        print(f"[AUTO PUBLISH] Uploading to TikTok for job {job_id}...")
-        result = publish_to_tiktok_webhook(video_filename, metadata_result or {})
+        # ============================================================
+        # 2. RENDER VIDEO
+        # ============================================================
+        print(f"[DEBUG AUTO-PUBLISH] 🎬 Step 2: Rendering video...")
+        video_filename = create_tiktok_video_with_subtitles(merged_audio, metadata or {})
 
-        if result.get("status") == "success":
-            tiktok_url = None
-            data = result.get("data") or {}
-            if isinstance(data, dict):
-                tiktok_url = data.get("video_url") or data.get("url") or data.get("share_url")
-            update_tiktok_status(job_id, "success", url=tiktok_url, progress=100)
-            print(f"[AUTO PUBLISH] ✅ Job {job_id} published to TikTok")
+        if video_filename:
+            print(f"[DEBUG AUTO-PUBLISH] ✅ Video rendered: {video_filename}")
+            db = SessionLocal()
+            item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+            if item:
+                item.video_filename = video_filename
+                db.commit()
+                print(f"[DEBUG AUTO-PUBLISH] ✅ Database updated with video filename")
+            db.close()
         else:
-            update_tiktok_status(job_id, "failed", error=result.get("error", "Unknown error"), progress=100)
-            print(f"[AUTO PUBLISH] ❌ Job {job_id} failed to publish: {result.get('error')}")
+            print(f"[DEBUG AUTO-PUBLISH] ❌ Video render failed")
+            return
+
+        # ============================================================
+        # 3. UPLOAD TIKTOK
+        # ============================================================
+        print(f"[DEBUG AUTO-PUBLISH] 📱 Step 3: Uploading to TikTok...")
+        result = publish_to_tiktok_webhook(video_filename, metadata or {})
+
+        db = SessionLocal()
+        item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
+        if item:
+            item.tiktok_status = result.get("status", "failed")
+            if result.get("status") in ["success", "test_success"]:
+                item.tiktok_url = result.get("data", {}).get("url") or "Uploaded"
+            else:
+                item.tiktok_error = result.get("error", "Unknown error")
+            db.commit()
+        db.close()
+
+        print(f"[DEBUG AUTO-PUBLISH] ✅ TikTok upload result: {result.get('status')}")
 
     except Exception as e:
-        print(f"[AUTO PUBLISH ERROR] Job {job_id}: {e}")
-        update_tiktok_status(job_id, "failed", error=str(e), progress=100)
+        print(f"[DEBUG AUTO-PUBLISH] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 def run_ai_pipeline(
     keyword: str,
