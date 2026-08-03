@@ -118,6 +118,7 @@ def create_tiktok_video_with_subtitles(audio_filename: str, metadata: dict) -> s
         "-c:a", "aac",
         "-pix_fmt", "yuv420p",
         "-shortest",
+         "-f", "mp4",
         temp_video_path,  # <- tulis ke temp dulu, bukan output_video_path
     ]
 
