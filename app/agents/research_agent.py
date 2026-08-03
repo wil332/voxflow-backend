@@ -2,7 +2,7 @@ import time
 import requests
 from app.config import settings
 
-def run_research_agent(keyword: str, language: str = "indonesian") -> str:
+def run_research_agent(keyword: str, job_id: int = None, language: str = "indonesian") -> str:
     print(f"[RESEARCH] Keyword: {keyword}, Language: {language}")
 
     url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -54,8 +54,10 @@ def run_research_agent(keyword: str, language: str = "indonesian") -> str:
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=70)
         if response.status_code != 200:
-            return f"Gagal dari server Qwen (Status {response.status_code})"
+            raise Exception(f"Gagal dari server Qwen (Status {response.status_code}): {response.text[:200]}")
         data = response.json()
         return data['choices'][0]['message']['content']
+    except requests.exceptions.Timeout:
+        raise Exception("Qwen API timeout setelah 70 detik.")
     except Exception as e:
-        return f"Error: {str(e)}"
+        raise Exception(f"Research agent error: {str(e)}")
