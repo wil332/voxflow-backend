@@ -5,9 +5,8 @@ from app.config import settings
 def run_research_agent(keyword: str, job_id: int = None, language: str = "indonesian") -> str:
     print(f"[RESEARCH] Keyword: {keyword}, Language: {language}")
 
-    url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+    url = "https://api.groq.com/openai/v1/chat/completions"
 
-    # === SYSTEM PROMPT BERDASARKAN BAHASA ===
     prompts = {
         "indonesian": (
             "Anda adalah AI Research Assistant untuk VoxFlow AI.\n"
@@ -38,12 +37,12 @@ def run_research_agent(keyword: str, job_id: int = None, language: str = "indone
     system_prompt = prompts.get(language, prompts["indonesian"])
 
     headers = {
-        "Authorization": f"Bearer {settings.QWEN_API_KEY}",
+        "Authorization": f"Bearer {settings.GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
 
     payload = {
-        "model": "qwen-max",
+        "model": "llama-3.3-70b-versatile",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Lakukan riset mendalam terkait topik/keyword: {keyword}"}
@@ -54,10 +53,10 @@ def run_research_agent(keyword: str, job_id: int = None, language: str = "indone
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=70)
         if response.status_code != 200:
-            raise Exception(f"Gagal dari server Qwen (Status {response.status_code}): {response.text[:200]}")
+            raise Exception(f"Gagal dari server Groq (Status {response.status_code}): {response.text[:200]}")
         data = response.json()
         return data['choices'][0]['message']['content']
     except requests.exceptions.Timeout:
-        raise Exception("Qwen API timeout setelah 70 detik.")
+        raise Exception("Groq API timeout setelah 70 detik.")
     except Exception as e:
         raise Exception(f"Research agent error: {str(e)}")
