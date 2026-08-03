@@ -13,69 +13,75 @@ def run_podcast_pipeline_task(
     tone: str = "professional",
     voice: str = "mixed",
 ):
-    """
-    Pipeline utama: research -> script -> audio -> metadata, lalu otomatis
-    lanjut merge audio -> render video -> publish TikTok (lihat
-    ai_pipeline.py::_auto_publish_to_tiktok yang sudah dipanggil di dalam
-    run_ai_pipeline itu sendiri).
-    """
     from app.agents.ai_pipeline import run_ai_pipeline
 
     db = SessionLocal()
     try:
         item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
-        if item:
-            item.status = "processing"
-            item.progress = 5
-            item.agent_status = {
-                "research": "pending",
-                "script": "pending",
-                "audio": "pending",
-                "metadata": "pending",
-                "tiktok": "pending",
-            }
-            db.commit()
+
+        # ============================================================
+        # GUARD BARU: kalau job sudah dihapus (misal user klik Delete All
+        # tepat setelah generate), STOP di sini. Jangan buang waktu/API
+        # credit menjalankan pipeline berat untuk job yang sudah tidak ada.
+        # ============================================================
+        if not item:
+            print(f"[TASK] Job {job_id} sudah dihapus dari database, membatalkan proses.")
+            return {"job_id": job_id, "status": "cancelled", "reason": "Job was deleted before processing started"}
+
+        item.status = "processing"
+        item.progress = 5
+        item.agent_status = {
+            "research": "pending",
+            "script": "pending",
+            "audio": "pending",
+            "metadata": "pending",
+            "tiktok": "pending",
+        }
+        db.commit()
         print(f"[TASK] Job {job_id} initialized, mulai pipeline...")
 
         research_data, script_json, metadata, audio_segments = run_ai_pipeline(
             keyword, job_id, language=language, tone=tone, voice=voice
         )
 
-        # Refresh supaya dapat agent_status/tiktok_status TERBARU yang sudah
-        # di-commit oleh session lain di dalam run_ai_pipeline (termasuk
-        # hasil auto-publish TikTok).
+        # ============================================================
+        # GUARD KEDUA: cek lagi SETELAH pipeline berjalan -- kalau job
+        # dihapus DI TENGAH proses (misal saat lagi generate audio),
+        # jangan simpan hasilnya, karena tidak ada row untuk ditulis.
+        # ============================================================
         item = db.query(PodcastHistory).filter(PodcastHistory.id == job_id).first()
-        if item:
-            db.refresh(item)
-            item.research_summary = str(research_data)
-            item.metadata_json = metadata
-            item.audio_segments = audio_segments
-            if not item.merged_audio_filename:
-                item.status = "failed"
-                item.error_message = "Audio gagal digenerate atau digabung (cek log ElevenLabs / audio_agent)."
-            elif not item.video_filename:
-                item.status = "failed"
-                item.error_message = "Audio berhasil, tapi render video gagal."
-            else:
-                item.status = "completed"
+        if not item:
+            print(f"[TASK] Job {job_id} dihapus di tengah proses, hasil pipeline dibuang.")
+            return {"job_id": job_id, "status": "cancelled", "reason": "Job was deleted during processing"}
 
-            item.progress = 100 if item.status == "completed" else item.progress
+        db.refresh(item)
+        item.research_summary = str(research_data)
+        item.metadata_json = metadata
+        item.audio_segments = audio_segments
+        if not item.merged_audio_filename:
+            item.status = "failed"
+            item.error_message = "Audio gagal digenerate atau digabung (cek log ElevenLabs / audio_agent)."
+        elif not item.video_filename:
+            item.status = "failed"
+            item.error_message = "Audio berhasil, tapi render video gagal."
+        else:
+            item.status = "completed"
 
-            merged_agent_status = dict(item.agent_status or {})
-            merged_agent_status.update({
-                "research": "done",
-                "script": "done",
-                "audio": "done" if item.merged_audio_filename else "failed",
-                "metadata": "done",
-            })
-            item.agent_status = merged_agent_status
+        item.progress = 100 if item.status == "completed" else item.progress
 
-            db.commit()
-            print(f"[TASK] Job {job_id} {item.status}.")
+        merged_agent_status = dict(item.agent_status or {})
+        merged_agent_status.update({
+            "research": "done",
+            "script": "done",
+            "audio": "done" if item.merged_audio_filename else "failed",
+            "metadata": "done",
+        })
+        item.agent_status = merged_agent_status
+
+        db.commit()
+        print(f"[TASK] Job {job_id} {item.status}.")
 
         return {"job_id": job_id, "status": item.status if item else "unknown"}
-
-
 
     except Exception as e:
         print(f"[TASK ERROR] Job {job_id}: {e}")
