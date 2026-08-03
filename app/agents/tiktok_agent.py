@@ -96,7 +96,7 @@ def publish_to_tiktok_webhook(video_filename: str, metadata: dict) -> dict:
             description=caption,
             cookies=cookies_path,
             headless=True,
-            browser="chromium",
+            browser="chrome",
         )
 
         print("[TIKTOK AGENT] ✅ Fallback Selenium berhasil, tanpa perlu gateway eksternal!")
